@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export JAVA_HOME=\"/c/Program Files/Android/Android Studio/jbr\")",
+      "Bash(./gradlew :app:compileDebugKotlin :app:testDebugUnitTest --console=plain)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(grep -nB1 -A12 \"What went wrong\" build_log.txt)"
+    ]
+  }
+}

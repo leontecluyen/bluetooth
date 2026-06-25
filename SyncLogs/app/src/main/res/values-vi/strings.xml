@@ -1,0 +1,105 @@
+<resources>
+    <string name="app_name">Sync Logs</string>
+
+    <!-- Thông báo bật Bluetooth -->
+    <string name="bt_enable_channel">Đồng bộ Bluetooth</string>
+    <string name="bt_enable_title">Bật Bluetooth để đồng bộ</string>
+    <string name="bt_enable_text">Chạm để bật Bluetooth và gửi log lên PC.</string>
+
+    <!-- Tiêu đề màn hình -->
+    <string name="screen_title">Leontec Log Sync</string>
+
+    <!-- Thẻ trạng thái -->
+    <string name="status_unsupported">Thiết bị không hỗ trợ Bluetooth</string>
+    <string name="status_need_permission">Chưa có quyền Bluetooth/Vị trí</string>
+    <string name="status_bt_off">Bluetooth đang TẮT</string>
+    <string name="status_no_pc">Chưa chọn PC để đồng bộ</string>
+    <string name="status_ready">Sẵn sàng — PC: %1$s</string>
+    <string name="pc_saved">(đã lưu)</string>
+
+    <!-- Thẻ listener (heartbeat) -->
+    <string name="listener_checking">Đang kiểm tra listener PC…</string>
+    <string name="listener_ok">Listener PC: OK ♥  (PC: %1$s)</string>
+    <string name="listener_no_response">Listener PC: KHÔNG PHẢN HỒI — %1$s</string>
+    <string name="listener_disconnected">Listener PC: MẤT KẾT NỐI — %1$s</string>
+    <string name="unknown_short">?</string>
+
+    <!-- Hành động chính / phụ -->
+    <string name="btn_grant_permission">Cấp quyền</string>
+    <string name="btn_enable_bt">Bật Bluetooth</string>
+    <string name="btn_scanning">Đang tìm thiết bị…</string>
+    <string name="btn_choose_pc">Chọn PC</string>
+    <string name="btn_sync_now">Đồng bộ ngay</string>
+    <string name="label_auto">Auto</string>
+    <string name="btn_change_pc">Đổi PC</string>
+    <string name="btn_create_sample">Tạo CSV mẫu</string>
+    <string name="btn_reset_all">Reset tất cả</string>
+    <string name="samples_pending">Mẫu chờ gửi: %1$d</string>
+    <string name="sample_sent">đã gửi</string>
+    <string name="sample_waiting">chờ gửi</string>
+    <string name="tap_to_resend">chạm để gửi lại</string>
+    <string name="toast_resend_queued">Đã xếp gửi lại (trùng tên). Bấm Đồng bộ ngay / Auto.</string>
+
+    <!-- Toast -->
+    <string name="toast_missing_permission">Thiếu quyền Bluetooth/Vị trí</string>
+    <string name="toast_pairing">Đang ghép đôi với %1$s…</string>
+    <string name="toast_reset_done">Đã reset (huỷ pair %1$d thiết bị). Mở Cài đặt để thu hồi quyền.</string>
+    <string name="toast_auto_on">Đã bật tự động đồng bộ + sync ngay</string>
+    <string name="toast_geofence_error">Lỗi Geofence: %1$s</string>
+    <string name="toast_sample_created">Đã tạo mẫu (chờ gửi). Bấm Đồng bộ ngay / Auto để gửi.</string>
+
+    <!-- Hộp thoại reset -->
+    <string name="dialog_reset_title">Reset tất cả?</string>
+    <string name="dialog_reset_body">Huỷ ghép đôi mọi thiết bị, xoá PC đã lưu, xoá toàn bộ log và tắt Geofence. Sau đó mở màn hình Cài đặt để bạn tự thu hồi quyền. Hành động này không hoàn tác được.</string>
+    <string name="btn_reset">Reset</string>
+    <string name="btn_cancel">Huỷ</string>
+
+    <!-- Chọn thiết bị -->
+    <string name="picker_scanning_title">Đang tìm thiết bị…</string>
+    <string name="picker_title">Chọn thiết bị PC</string>
+    <string name="picker_none">Không tìm thấy thiết bị nào.</string>
+    <string name="device_bonded">Đã ghép đôi</string>
+    <string name="device_available">Thiết bị khả dụng</string>
+    <string name="btn_close">Đóng</string>
+
+    <!-- Danh sách CSV -->
+    <string name="csv_summary">CSV: %1$d   |   Dòng chờ đồng bộ: %2$d</string>
+    <string name="csv_empty">Chưa có CSV nào. Bấm \"Tạo CSV mẫu\".</string>
+    <string name="row_count">%1$d dòng</string>
+
+    <!-- Màn hình menu (MainActivity) -->
+    <string name="menu_log_send_title">④ Gửi log</string>
+    <string name="menu_log_send_subtitle">Gửi log công việc lên PC</string>
+
+    <!-- Màn hình gửi log (LogSendActivity) -->
+    <string name="logsend_title">Gửi log</string>
+    <string name="logsend_date_label">Ngày gửi</string>
+    <string name="logsend_date_note">(Không chọn được ngày tương lai)</string>
+    <string name="logsend_target_label">File mục tiêu</string>
+    <string name="logsend_filter_unsent">Chưa gửi</string>
+    <string name="logsend_filter_sent">Đã gửi</string>
+    <string name="logsend_select_all">Chọn tất cả</string>
+    <string name="logsend_selected_count">Đã chọn %1$d</string>
+    <string name="logsend_empty">Không có file cho ngày này. Bấm \"Tạo log mẫu\".</string>
+    <string name="logsend_btn_send">Gửi</string>
+    <string name="logsend_sending">Đang gửi…</string>
+    <string name="logsend_btn_create_sample">Tạo log mẫu</string>
+    <string name="logsend_sample_created">Đã tạo mẫu cho %1$s.</string>
+    <string name="logsend_no_selection">Hãy chọn ít nhất 1 file.</string>
+    <string name="logsend_note_oneday">※ 1 lần gửi = chỉ 1 ngày đã chọn</string>
+    <string name="logsend_note_backup">※ Gửi thành công sẽ tự chuyển vào backup/ ở PC</string>
+
+    <!-- Thông báo kết quả gửi (5 trường hợp) -->
+    <string name="send_result_bt_off">Hãy bật Bluetooth.</string>
+    <string name="send_result_not_paired">Hãy ghép đôi với PC.</string>
+    <string name="send_result_connect_failed">Kết nối tới PC thất bại.</string>
+    <string name="send_result_send_failed">Gửi file thất bại.</string>
+    <string name="send_result_success">Gửi hoàn tất.</string>
+
+    <!-- Chọn ngôn ngữ -->
+    <string name="menu_language">Ngôn ngữ</string>
+    <string name="lang_system">Theo hệ thống</string>
+    <string name="lang_en">English</string>
+    <string name="lang_vi">Tiếng Việt</string>
+    <string name="lang_ja">日本語</string>
+</resources>

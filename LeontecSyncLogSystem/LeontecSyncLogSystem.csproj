@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Windows 10 build target required by 32feet.NET (RFCOMM server via WinRT).
+         Target net10 because that's the runtime set actually installed on this box for ALL three
+         shared frameworks (Microsoft.NETCore.App / WindowsDesktop.App / AspNetCore.App all 10.0.9).
+         Critically, the WinForms *Designer* (DesignToolsServer.exe) loads the project's
+         FrameworkReference (Microsoft.AspNetCore.App) and demands that exact major — only 10.x is
+         installed, so a net8 target made the designer keep prompting "install AspNetCore.App 8.0"
+         (clicking install adds a stray .NET 8 runtime that then breaks `dotnet run`). net10 makes
+         build + run + designer all use the installed 10.0.9. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>LeontecSyncLogSystem</RootNamespace>
+    <AssemblyName>LeontecSyncLogSystem</AssemblyName>
+    <!-- Roll forward to the newest installed patch/major if the exact 10.0 build is missing. -->
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Implicit usings the merged background-service classes expect (the Web SDK
+         provides these automatically; the WinForms SDK does not). -->
+    <Using Include="Microsoft.Extensions.Logging" />
+    <Using Include="Microsoft.Extensions.DependencyInjection" />
+    <Using Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- In-process Kestrel web API (/api/sync, /api/status) inside the desktop app. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+
+    <!-- Bluetooth SPP server (RFCOMM) — accepts multiple device connections concurrently -->
+    <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.2.1" />
+
+    <!-- EF Core 8 + database providers (switchable via Database:Provider) -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.13" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.13" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.13" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="sample-logs.csv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

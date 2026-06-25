@@ -1,0 +1,105 @@
+<resources>
+    <string name="app_name">Sync Logs</string>
+
+    <!-- Bluetooth有効化通知 -->
+    <string name="bt_enable_channel">Bluetooth同期</string>
+    <string name="bt_enable_title">同期するにはBluetoothをオンにしてください</string>
+    <string name="bt_enable_text">タップしてBluetoothをオンにし、ログをPCに送信します。</string>
+
+    <!-- 画面タイトル -->
+    <string name="screen_title">Leontec Log Sync</string>
+
+    <!-- ステータスカード -->
+    <string name="status_unsupported">この端末はBluetoothに対応していません</string>
+    <string name="status_need_permission">Bluetooth/位置情報の権限がありません</string>
+    <string name="status_bt_off">Bluetoothがオフです</string>
+    <string name="status_no_pc">同期するPCが未選択です</string>
+    <string name="status_ready">準備完了 — PC: %1$s</string>
+    <string name="pc_saved">(保存済み)</string>
+
+    <!-- リスナー（ハートビート）カード -->
+    <string name="listener_checking">PCリスナーを確認中…</string>
+    <string name="listener_ok">PCリスナー: OK ♥  (PC: %1$s)</string>
+    <string name="listener_no_response">PCリスナー: 応答なし — %1$s</string>
+    <string name="listener_disconnected">PCリスナー: 切断 — %1$s</string>
+    <string name="unknown_short">?</string>
+
+    <!-- 主要 / 補助アクション -->
+    <string name="btn_grant_permission">権限を許可</string>
+    <string name="btn_enable_bt">Bluetoothをオン</string>
+    <string name="btn_scanning">デバイスを検索中…</string>
+    <string name="btn_choose_pc">PCを選択</string>
+    <string name="btn_sync_now">今すぐ同期</string>
+    <string name="label_auto">自動</string>
+    <string name="btn_change_pc">PCを変更</string>
+    <string name="btn_create_sample">サンプルCSVを作成</string>
+    <string name="btn_reset_all">すべてリセット</string>
+    <string name="samples_pending">送信待ちサンプル: %1$d</string>
+    <string name="sample_sent">送信済み</string>
+    <string name="sample_waiting">送信待ち</string>
+    <string name="tap_to_resend">タップで再送信</string>
+    <string name="toast_resend_queued">再送信を登録しました（同名ファイル）。「今すぐ同期」/自動で送信。</string>
+
+    <!-- トースト -->
+    <string name="toast_missing_permission">Bluetooth/位置情報の権限がありません</string>
+    <string name="toast_pairing">%1$s とペアリング中…</string>
+    <string name="toast_reset_done">リセット完了（%1$d 台のペアリング解除）。権限の取り消しは設定から行ってください。</string>
+    <string name="toast_auto_on">自動同期を有効化し、今すぐ同期しました</string>
+    <string name="toast_geofence_error">ジオフェンスエラー: %1$s</string>
+    <string name="toast_sample_created">サンプルを作成しました（送信待ち）。「今すぐ同期」/自動で送信します。</string>
+
+    <!-- リセットダイアログ -->
+    <string name="dialog_reset_title">すべてリセットしますか？</string>
+    <string name="dialog_reset_body">すべてのデバイスのペアリングを解除し、保存したPC・全ログを削除し、ジオフェンスをオフにします。その後、設定画面を開くので権限はご自身で取り消してください。この操作は元に戻せません。</string>
+    <string name="btn_reset">リセット</string>
+    <string name="btn_cancel">キャンセル</string>
+
+    <!-- デバイス選択 -->
+    <string name="picker_scanning_title">デバイスを検索中…</string>
+    <string name="picker_title">PCデバイスを選択</string>
+    <string name="picker_none">デバイスが見つかりません。</string>
+    <string name="device_bonded">ペアリング済み</string>
+    <string name="device_available">利用可能なデバイス</string>
+    <string name="btn_close">閉じる</string>
+
+    <!-- CSVリスト -->
+    <string name="csv_summary">CSV: %1$d   |   同期待ちの行: %2$d</string>
+    <string name="csv_empty">CSVがまだありません。「サンプルCSVを作成」をタップしてください。</string>
+    <string name="row_count">%1$d 行</string>
+
+    <!-- メニュー画面 (MainActivity) -->
+    <string name="menu_log_send_title">④ ログ送信</string>
+    <string name="menu_log_send_subtitle">作業ログのPCへの送信</string>
+
+    <!-- ログ送信画面 (LogSendActivity) -->
+    <string name="logsend_title">ログ送信</string>
+    <string name="logsend_date_label">送信日</string>
+    <string name="logsend_date_note">(未来日は選択不可)</string>
+    <string name="logsend_target_label">対象ファイル</string>
+    <string name="logsend_filter_unsent">未送信</string>
+    <string name="logsend_filter_sent">送信済</string>
+    <string name="logsend_select_all">全選択</string>
+    <string name="logsend_selected_count">選択 %1$d 件</string>
+    <string name="logsend_empty">この日のファイルはありません。「サンプルログを作成」をタップしてください。</string>
+    <string name="logsend_btn_send">送信</string>
+    <string name="logsend_sending">送信中…</string>
+    <string name="logsend_btn_create_sample">サンプルログを作成</string>
+    <string name="logsend_sample_created">%1$s のサンプルを作成しました。</string>
+    <string name="logsend_no_selection">ファイルを選択してください。</string>
+    <string name="logsend_note_oneday">※ 1回の送信で 選択日 1日分のみ</string>
+    <string name="logsend_note_backup">※ 送信成功で backup/ へ自動移動</string>
+
+    <!-- 送信結果メッセージ（5パターン） -->
+    <string name="send_result_bt_off">Bluetooth を ON にしてください。</string>
+    <string name="send_result_not_paired">PC とペアリングしてください。</string>
+    <string name="send_result_connect_failed">PC への接続に失敗しました。</string>
+    <string name="send_result_send_failed">ファイル送信に失敗しました。</string>
+    <string name="send_result_success">送信が完了しました。</string>
+
+    <!-- 言語選択 -->
+    <string name="menu_language">言語</string>
+    <string name="lang_system">システムに従う</string>
+    <string name="lang_en">English</string>
+    <string name="lang_vi">Tiếng Việt</string>
+    <string name="lang_ja">日本語</string>
+</resources>

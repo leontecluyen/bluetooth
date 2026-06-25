@@ -1,0 +1,105 @@
+<resources>
+    <string name="app_name">Sync Logs</string>
+
+    <!-- Bluetooth-enable notification -->
+    <string name="bt_enable_channel">Bluetooth sync</string>
+    <string name="bt_enable_title">Turn on Bluetooth to sync</string>
+    <string name="bt_enable_text">Tap to turn on Bluetooth and send logs to the PC.</string>
+
+    <!-- Screen title -->
+    <string name="screen_title">Leontec Log Sync</string>
+
+    <!-- Status card -->
+    <string name="status_unsupported">This device does not support Bluetooth</string>
+    <string name="status_need_permission">Bluetooth/Location permission not granted</string>
+    <string name="status_bt_off">Bluetooth is OFF</string>
+    <string name="status_no_pc">No PC selected for sync</string>
+    <string name="status_ready">Ready — PC: %1$s</string>
+    <string name="pc_saved">(saved)</string>
+
+    <!-- Listener (heartbeat) card -->
+    <string name="listener_checking">Checking PC listener…</string>
+    <string name="listener_ok">PC listener: OK ♥  (PC: %1$s)</string>
+    <string name="listener_no_response">PC listener: NOT RESPONDING — %1$s</string>
+    <string name="listener_disconnected">PC listener: DISCONNECTED — %1$s</string>
+    <string name="unknown_short">?</string>
+
+    <!-- Primary / secondary actions -->
+    <string name="btn_grant_permission">Grant permission</string>
+    <string name="btn_enable_bt">Turn on Bluetooth</string>
+    <string name="btn_scanning">Searching for devices…</string>
+    <string name="btn_choose_pc">Choose PC</string>
+    <string name="btn_sync_now">Sync now</string>
+    <string name="label_auto">Auto</string>
+    <string name="btn_change_pc">Change PC</string>
+    <string name="btn_create_sample">Create sample CSV</string>
+    <string name="btn_reset_all">Reset all</string>
+    <string name="samples_pending">Samples pending send: %1$d</string>
+    <string name="sample_sent">sent</string>
+    <string name="sample_waiting">waiting</string>
+    <string name="tap_to_resend">tap to resend</string>
+    <string name="toast_resend_queued">Queued to resend (same filename). Tap Sync now / Auto.</string>
+
+    <!-- Toasts -->
+    <string name="toast_missing_permission">Missing Bluetooth/Location permission</string>
+    <string name="toast_pairing">Pairing with %1$s…</string>
+    <string name="toast_reset_done">Reset done (unpaired %1$d devices). Open Settings to revoke permissions.</string>
+    <string name="toast_auto_on">Auto-sync enabled + synced now</string>
+    <string name="toast_geofence_error">Geofence error: %1$s</string>
+    <string name="toast_sample_created">Sample created (pending). Tap Sync now / Auto to send.</string>
+
+    <!-- Reset dialog -->
+    <string name="dialog_reset_title">Reset everything?</string>
+    <string name="dialog_reset_body">Unpair every device, clear the saved PC, delete all logs and turn off Geofence. Then open Settings so you can revoke permissions yourself. This cannot be undone.</string>
+    <string name="btn_reset">Reset</string>
+    <string name="btn_cancel">Cancel</string>
+
+    <!-- Device picker -->
+    <string name="picker_scanning_title">Searching for devices…</string>
+    <string name="picker_title">Choose the PC device</string>
+    <string name="picker_none">No devices found.</string>
+    <string name="device_bonded">Paired</string>
+    <string name="device_available">Available device</string>
+    <string name="btn_close">Close</string>
+
+    <!-- CSV list -->
+    <string name="csv_summary">CSV: %1$d   |   Rows pending sync: %2$d</string>
+    <string name="csv_empty">No CSV yet. Tap \"Create sample CSV\".</string>
+    <string name="row_count">%1$d rows</string>
+
+    <!-- Menu screen (MainActivity) -->
+    <string name="menu_log_send_title">④ Send logs</string>
+    <string name="menu_log_send_subtitle">Send work logs to the PC</string>
+
+    <!-- Log-send screen (LogSendActivity) -->
+    <string name="logsend_title">Send logs</string>
+    <string name="logsend_date_label">Send date</string>
+    <string name="logsend_date_note">(Future dates can\'t be selected)</string>
+    <string name="logsend_target_label">Target files</string>
+    <string name="logsend_filter_unsent">Unsent</string>
+    <string name="logsend_filter_sent">Sent</string>
+    <string name="logsend_select_all">Select all</string>
+    <string name="logsend_selected_count">%1$d selected</string>
+    <string name="logsend_empty">No files for this day. Tap \"Create sample log\".</string>
+    <string name="logsend_btn_send">Send</string>
+    <string name="logsend_sending">Sending…</string>
+    <string name="logsend_btn_create_sample">Create sample log</string>
+    <string name="logsend_sample_created">Sample created for %1$s.</string>
+    <string name="logsend_no_selection">Select at least one file.</string>
+    <string name="logsend_note_oneday">※ One send = the selected day only</string>
+    <string name="logsend_note_backup">※ On success, files auto-move to backup/ on the PC</string>
+
+    <!-- Send result messages (the 5 cases) -->
+    <string name="send_result_bt_off">Please turn on Bluetooth.</string>
+    <string name="send_result_not_paired">Please pair with the PC.</string>
+    <string name="send_result_connect_failed">Failed to connect to the PC.</string>
+    <string name="send_result_send_failed">Failed to send the file.</string>
+    <string name="send_result_success">Send completed.</string>
+
+    <!-- Language picker -->
+    <string name="menu_language">Language</string>
+    <string name="lang_system">System default</string>
+    <string name="lang_en">English</string>
+    <string name="lang_vi">Tiếng Việt</string>
+    <string name="lang_ja">日本語</string>
+</resources>

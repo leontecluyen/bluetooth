@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP is blocked by default on targetSdk 28+. The Wi-Fi fallback talks
+  to a PC on the office LAN over plain HTTP at a runtime-configurable IP, so domain
+  pinning is impractical (changing the IP would silently break sync).
+
+  This is an internal, LAN-only enterprise handheld that never sends data to the
+  public internet, so we permit cleartext at the base level. If/when the PC endpoint
+  is moved behind TLS, flip this to false and add an HTTPS <domain-config>.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

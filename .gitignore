@@ -1,0 +1,39 @@
+# ---- Local test artifacts (no DB commits) ----
+synclogs.db
+synclogs.db-shm
+synclogs.db-wal
+*.db
+*.db-shm
+*.db-wal
+
+# ---- .NET / Visual Studio ----
+[Bb]in/
+[Oo]bj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+[Dd]ebug/
+[Rr]elease/
+
+# ---- Android / Gradle ----
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+keystore.properties
+*.jks
+*.keystore
+
+# ---- OS / misc ----
+Thumbs.db
+.DS_Store
