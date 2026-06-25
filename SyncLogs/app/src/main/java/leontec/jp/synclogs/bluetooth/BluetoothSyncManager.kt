@@ -43,6 +43,12 @@ class BluetoothSyncManager(private val context: Context) {
     private val PONG = "PONG"
     private val HEARTBEAT_REPLY_TIMEOUT_MS = 3_000L
 
+    // Batch gửi nhiều file trên MỘT kết nối: gửi hết các frame CSV rồi 1 frame "BATCH_END"; PC trả
+    // MỘT frame tổng hợp "RESULT\n<filename>=OK|ERR\n…". Chỉ file nào OK mới được move sang backup.
+    private val BATCH_END = "BATCH_END"
+    private val RESULT_HEADER = "RESULT"
+    private val RESULT_TIMEOUT_MS = 15_000L
+
     // Data class để hiển thị trên UI
     data class PairedDevice(val name: String, val address: String, val bonded: Boolean = true)
 
@@ -72,6 +78,12 @@ class BluetoothSyncManager(private val context: Context) {
      *  - [SUCCESS]        ⑤: tất cả file đã gửi xong.
      */
     enum class SendOutcome { BLUETOOTH_OFF, NOT_PAIRED, CONNECT_FAILED, SEND_FAILED, SUCCESS }
+
+    /** Một file CSV cần gửi trong batch (filename đã dựng sẵn kèm term + index). */
+    data class OutFile(val filename: String, val csvText: String)
+
+    /** Kết quả gửi batch: outcome tổng + tập filename PC xác nhận OK. */
+    data class BatchResult(val outcome: SendOutcome, val okFiles: Set<String>)
 
     companion object {
         /**
@@ -388,6 +400,102 @@ class BluetoothSyncManager(private val context: Context) {
         } finally {
             runCatching { socket?.close() }
             endSync()
+        }
+    }
+
+    /**
+     * Gửi NHIỀU file CSV trên MỘT kết nối SPP (1 batch): ghi lần lượt các frame
+     * `STX + filename\r\n + csv + ETX`, rồi 1 frame điều khiển `BATCH_END`. PC nhận hết, ingest
+     * từng file, trả MỘT frame tổng hợp `RESULT\n<filename>=OK|ERR\n…`. Chỉ file PC báo OK mới nằm
+     * trong [BatchResult.okFiles] (để caller move/xoá an toàn).
+     */
+    @SuppressLint("MissingPermission")
+    suspend fun sendBatch(
+        files: List<OutFile>,
+        targetName: String? = null,
+        targetAddress: String? = null
+    ): BatchResult = withContext(Dispatchers.IO) {
+        val ok = mutableSetOf<String>()
+        val btAdapter = adapter
+        if (btAdapter == null || !btAdapter.isEnabled) {
+            Log.w(TAG, "sendBatch: Bluetooth chưa bật → BLUETOOTH_OFF.")
+            return@withContext BatchResult(SendOutcome.BLUETOOTH_OFF, ok)
+        }
+        val target = resolveTarget((targetName ?: "").trim(), (targetAddress ?: "").trim(), logBonded = false)
+        if (target == null) {
+            Log.w(TAG, "sendBatch: chưa ghép đôi/không tìm thấy PC → NOT_PAIRED.")
+            return@withContext BatchResult(SendOutcome.NOT_PAIRED, ok)
+        }
+
+        var socket: BluetoothSocket? = null
+        beginSync() // chặn heartbeat ping trong lúc truyền cả batch
+        try {
+            val sock = try {
+                connectWithRetry(target)
+            } catch (e: IOException) {
+                Log.e(TAG, "sendBatch: kết nối SPP thất bại (${e.message}) → CONNECT_FAILED.")
+                return@withContext BatchResult(SendOutcome.CONNECT_FAILED, ok)
+            }
+            socket = sock
+            val out = sock.outputStream ?: throw IOException("Output stream null")
+            val input = sock.inputStream
+
+            try {
+                for (f in files) {
+                    out.write(frame(f.filename + "\r\n" + f.csvText)); out.flush()
+                    Log.d(TAG, "sendBatch: đã gửi frame '${f.filename}'.")
+                }
+                out.write(frame(BATCH_END)); out.flush()
+            } catch (e: IOException) {
+                Log.e(TAG, "sendBatch: ghi thất bại (${e.message}) → SEND_FAILED.")
+                return@withContext BatchResult(SendOutcome.SEND_FAILED, ok)
+            }
+
+            markSyncOk(target.name)
+
+            // Chờ MỘT frame bắt đầu bằng "RESULT".
+            val result = withTimeoutOrNull(RESULT_TIMEOUT_MS) {
+                var r: String? = null
+                while (true) {
+                    val fr = readFrame(input) ?: break
+                    if (fr.trim().startsWith(RESULT_HEADER)) { r = fr; break }
+                }
+                r
+            }
+            if (result.isNullOrBlank()) {
+                Log.w(TAG, "sendBatch: không nhận được RESULT (timeout) → SEND_FAILED (giữ toàn bộ file).")
+                return@withContext BatchResult(SendOutcome.SEND_FAILED, ok)
+            }
+            parseResult(result, ok)
+            Log.i(TAG, "sendBatch: PC xác nhận OK ${ok.size}/${files.size} file.")
+            val outcome = if (ok.size == files.size) SendOutcome.SUCCESS else SendOutcome.SEND_FAILED
+            BatchResult(outcome, ok)
+        } finally {
+            runCatching { socket?.close() }
+            endSync()
+        }
+    }
+
+    /** Bọc payload thành khung STX + body + ETX. */
+    private fun frame(payload: String): ByteArray {
+        val body = payload.toByteArray(Charsets.UTF_8)
+        val packet = ByteArray(body.size + 2)
+        packet[0] = STX
+        System.arraycopy(body, 0, packet, 1, body.size)
+        packet[packet.size - 1] = ETX
+        return packet
+    }
+
+    /** Parse "RESULT\n<filename>=OK\n<filename>=ERR\n…" → thêm filename có OK vào [ok]. */
+    private fun parseResult(result: String, ok: MutableSet<String>) {
+        result.split("\n").forEach { line ->
+            val l = line.trim()
+            if (l.isEmpty() || l.equals(RESULT_HEADER, ignoreCase = true)) return@forEach
+            val eq = l.lastIndexOf('=')
+            if (eq <= 0) return@forEach
+            val fn = l.substring(0, eq).trim()
+            val status = l.substring(eq + 1).trim()
+            if (status.equals("OK", ignoreCase = true)) ok.add(fn)
         }
     }
 

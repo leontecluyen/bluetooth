@@ -28,6 +28,14 @@ namespace LeontecSyncLogSystem.Services
         private const string HeartbeatPing = "PING";
         private const string HeartbeatPong = "PONG";
 
+        // Batch result protocol. The phone sends all CSV frames on ONE connection, then a single
+        // "BATCH_END" control frame. The PC accumulates each file's outcome and replies ONCE with a
+        // framed summary: "RESULT\n<filename>=OK\n<filename>=ERR\n…" so the phone can move/delete
+        // only the files that actually landed. Old phones that never send BATCH_END get no reply
+        // (backward compatible — they just close the socket).
+        private const string BatchEnd = "BATCH_END";
+        private const string BatchResultHeader = "RESULT";
+
         private readonly ILogIngestService _ingest;
         private readonly ServiceStatus _status;
         private readonly ICsvStore _csvStore;
@@ -137,6 +145,9 @@ namespace LeontecSyncLogSystem.Services
             var decoder = new FrameDecoder();
             var buffer = new byte[4096];
             var receivedData = false;
+            // Outcome of each CSV file in the current batch (filename → ok), flushed as one summary
+            // when the phone sends BATCH_END.
+            var batch = new List<(string file, bool ok)>();
 
             try
             {
@@ -152,11 +163,18 @@ namespace LeontecSyncLogSystem.Services
                             {
                                 await HandleHeartbeatAsync(frame, stream, cs, name, address, token);
                             }
+                            else if (IsBatchEnd(frame))
+                            {
+                                // Phone finished the batch → reply once with all files' outcomes.
+                                await SendBatchResultAsync(stream, batch, name, address, token);
+                                batch.Clear();
+                            }
                             else
                             {
                                 receivedData = true;
                                 cs.AddFrame();
-                                await IngestFrameAsync(frame, cs, name, address, token);
+                                var result = await IngestFrameAsync(frame, cs, name, address, token);
+                                batch.Add(result);
                             }
                         }
                     }
@@ -183,6 +201,9 @@ namespace LeontecSyncLogSystem.Services
 
         private static bool IsHeartbeat(string frame) =>
             frame.StartsWith(HeartbeatPing, StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsBatchEnd(string frame) =>
+            frame.Trim().Equals(BatchEnd, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// Handles a liveness ping ("PING,&lt;deviceName&gt;,&lt;epochMillis&gt;"): records it on the
@@ -227,16 +248,22 @@ namespace LeontecSyncLogSystem.Services
             }
         }
 
-        private async Task IngestFrameAsync(
+        /// <summary>
+        /// Ingests one CSV frame and returns its outcome (parsed filename + ok) so the caller can
+        /// include it in the batch summary. Never throws.
+        /// </summary>
+        private async Task<(string file, bool ok)> IngestFrameAsync(
             string frame, BtClientStatus cs, string name, string address, CancellationToken token)
         {
+            // Parsed filename echoed back in the batch result so the phone can correlate the outcome
+            // with the exact file it sent. Declared outside the try so the catch can report it too.
+            string filename = "";
             try
             {
                 // The frame's FIRST line may be the upload filename
                 // ({type}_{yyyyMMdd}_{index}_{termId}.txt); the rest is the CSV (its own first
                 // line is the header). Split them.
                 string csv = frame;
-                string filename = "";
                 int nl = frame.IndexOf('\n');
                 if (nl >= 0)
                 {
@@ -288,7 +315,7 @@ namespace LeontecSyncLogSystem.Services
                 if (received == 0 && type != CsvType.PalletLog && type != CsvType.MonitorLog)
                 {
                     _logger.LogWarning("Empty/unparseable frame from {Name} ({Addr}) discarded.", name, address);
-                    return;
+                    return (filename, false);
                 }
 
                 // Persist the device first (FK parent), then the CSV upload (raw text kept so its
@@ -314,13 +341,51 @@ namespace LeontecSyncLogSystem.Services
                 _logger.LogInformation(
                     "Ingested {Type} CSV from {Name} ({Addr}) term='{Term}' idx={Idx}: rows={Recv}, inserted={Ins}, dup={Dup}.",
                     CsvTypes.TypeKey(type), name, address, termId, index, received, inserted, duplicates);
+
+                return (filename, true);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                return (filename, false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to ingest frame from {Name} ({Addr}).", name, address);
+                return (filename, false);
+            }
+        }
+
+        /// <summary>
+        /// Sends the single batch summary "RESULT\n&lt;filename&gt;=OK\n&lt;filename&gt;=ERR\n…" (STX/ETX
+        /// framed) once the phone signals BATCH_END, so it can move/delete only the files that
+        /// actually landed. Best-effort.
+        /// </summary>
+        private async Task SendBatchResultAsync(
+            Stream stream, List<(string file, bool ok)> batch, string name, string address, CancellationToken token)
+        {
+            try
+            {
+                var sb = new StringBuilder(BatchResultHeader).Append('\n');
+                foreach (var (file, ok) in batch)
+                    sb.Append(file).Append('=').Append(ok ? "OK" : "ERR").Append('\n');
+
+                var body = Encoding.UTF8.GetBytes(sb.ToString());
+                var packet = new byte[body.Length + 2];
+                packet[0] = FrameDecoder.STX;
+                Array.Copy(body, 0, packet, 1, body.Length);
+                packet[^1] = FrameDecoder.ETX;
+                await stream.WriteAsync(packet, token);
+                await stream.FlushAsync(token);
+                _logger.LogInformation(
+                    "Sent batch RESULT to {Name} ({Addr}): {Count} file(s), OK={Ok}.",
+                    name, address, batch.Count, batch.Count(b => b.ok));
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to ingest frame from {Name} ({Addr}).", name, address);
+                _logger.LogWarning("Failed to send batch RESULT to {Name} ({Addr}): {Msg}", name, address, ex.Message);
             }
         }
 

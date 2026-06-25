@@ -134,24 +134,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Tạm dừng heartbeat ping để không tranh chấp kết nối trong cả đợt gửi.
         BluetoothSyncManager.pausePing(30_000L)
         viewModelScope.launch {
-            var worst = BluetoothSyncManager.SendOutcome.SUCCESS
-            var sent = 0
+            // Chuẩn bị từng file: index (đếm backup +1, tránh trùng trong cùng batch) + đọc CSV +
+            // dựng filename gửi PC. Lưu lại để move sau khi PC trả OK.
+            data class Prep(val entry: CsvFileEntry, val sentName: String)
+            val prepared = ArrayList<Prep>()
+            val outFiles = ArrayList<BluetoothSyncManager.OutFile>()
+            val usedIndex = HashMap<String, Int>()
             for (e in entries) {
-                // index + đọc CSV + di chuyển file = IO (sendOneCsv tự chuyển sang IO bên trong).
-                val index = withContext(Dispatchers.IO) { fileStore.nextIndex(e.type, e.date) }
+                val base = withContext(Dispatchers.IO) { fileStore.nextIndex(e.type, e.date) }
+                val idx = usedIndex[e.type]?.plus(1) ?: base
+                usedIndex[e.type] = idx
                 val csv = withContext(Dispatchers.IO) { fileStore.readCsv(e) }
-                val outcome = bluetooth.sendOneCsv(e.type, csv, term, index, e.date, selectedPcName, selectedPcAddress)
-                if (outcome == BluetoothSyncManager.SendOutcome.SUCCESS) {
-                    val sentName = "${e.type}_${e.date}_${safeTerm}_${index}.txt"
-                    withContext(Dispatchers.IO) { fileStore.moveToBackup(e, sentName) }
-                    sent++
-                } else if (severity(outcome) > severity(worst)) {
-                    worst = outcome
-                }
-                Log.i(TAG, "sendDay: ${e.displayName} (idx=$index) → $outcome")
+                val sentName = "${e.type}_${e.date}_${safeTerm}_${idx}.txt"
+                prepared.add(Prep(e, sentName))
+                outFiles.add(BluetoothSyncManager.OutFile(sentName, csv))
             }
-            Log.i(TAG, "sendDay xong: gửi OK $sent/${entries.size} file, kết quả hiển thị=$worst.")
-            onDone(worst)
+
+            // Gửi cả batch 1 lần; PC trả kết quả từng file trong 1 frame.
+            val br = bluetooth.sendBatch(outFiles, selectedPcName, selectedPcAddress)
+
+            // Chỉ MOVE sang backup những file PC xác nhận OK → không mất dữ liệu.
+            var moved = 0
+            for (p in prepared) {
+                if (br.okFiles.contains(p.sentName)) {
+                    withContext(Dispatchers.IO) { fileStore.moveToBackup(p.entry, p.sentName) }
+                    moved++
+                }
+            }
+            Log.i(TAG, "sendDay xong: gửi OK $moved/${entries.size} file, kết quả hiển thị=${br.outcome}.")
+            onDone(br.outcome)
         }
     }
 

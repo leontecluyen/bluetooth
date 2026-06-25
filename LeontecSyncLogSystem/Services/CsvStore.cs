@@ -75,9 +75,19 @@ namespace LeontecSyncLogSystem.Services
 
                 await db.SaveChangesAsync(token);
 
-                // Mark older uploads of the same terminal + type as superseded (snapshot semantics).
                 if (!string.IsNullOrEmpty(upload.TermId) && type != CsvType.Unknown && upload.UploadIndex > 0)
                 {
+                    // Resend with the SAME index = REPLACE: drop any prior upload of the same
+                    // (term, type, index) so the day view shows one copy, not a duplicate. The phone
+                    // re-sends a backup file under its original name precisely to overwrite the old one.
+                    await db.CsvUploads
+                        .Where(u => u.TermId == upload.TermId
+                                    && u.Type == upload.Type
+                                    && u.UploadIndex == upload.UploadIndex
+                                    && u.Id != upload.Id)
+                        .ExecuteDeleteAsync(token); // cascades to typed tables
+
+                    // Mark older uploads (lower index) of the same terminal + type as superseded.
                     await db.CsvUploads
                         .Where(u => u.TermId == upload.TermId
                                     && u.Type == upload.Type
