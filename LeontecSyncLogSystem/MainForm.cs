@@ -27,6 +27,8 @@ namespace LeontecSyncLogSystem
         private readonly MonitorService _monitor;
         private readonly ICsvBackupWriter _backup;
         private readonly IMasterStore _master;
+        private readonly UiConfig _ui;
+        private readonly string _mysqlEndpoint;
         private readonly System.Windows.Forms.Timer _timer = new() { Interval = 2000 };
 
         // Master edit state. _currentMaster is null when the right panel shows the day log; set to a
@@ -78,18 +80,27 @@ namespace LeontecSyncLogSystem
         /// <see cref="Load"/> handler and the refresh timer never run, so the null service is never
         /// dereferenced. Do NOT use this constructor at runtime.
         /// </summary>
-        public MainForm() : this(null!, null!, null!) { }
+        public MainForm() : this(null!, null!, null!, new UiConfig(), new MySqlConfig()) { }
 
-        public MainForm(MonitorService monitor, ICsvBackupWriter backup, IMasterStore master)
+        public MainForm(MonitorService monitor, ICsvBackupWriter backup, IMasterStore master, UiConfig ui, MySqlConfig mysql)
         {
             InitializeComponent();   // builds the layout skeleton (MainForm.Designer.cs)
             _monitor = monitor;
             _backup = backup;
             _master = master;
+            _ui = ui;
+            _mysqlEndpoint = mysql.Endpoint;
+
+            TryLoadAppIcon();
+
+            // Language comes from configuration.xml (default ja) — the authoritative source. Apply it
+            // BEFORE SetupLanguageBox so the combo (if shown) reflects the config value.
+            Loc.SetLanguage(_ui.LanguageAsAppLang());
 
             BuildColumns();
             SetupLanguageBox();
             ApplyTexts();
+            ApplyUiConfig();         // show/hide toolbar buttons + left panels per configuration.xml
             Loc.Changed += OnLanguageChanged;
 
             // Date filter: default = today, and the user can never pick a day past today.
@@ -103,10 +114,11 @@ namespace LeontecSyncLogSystem
             _btnPrevDay.Click += (_, _) => StepDay(-1);
             _btnNextDay.Click += (_, _) => StepDay(+1);
 
-            // Master editing: the two file buttons open a master in the right panel; Sync arms them.
+            // Master editing: the two file buttons open a master in the right panel for edit + save.
+            // No "sync" button — a saved master is delivered when a phone taps "receive master"
+            // (the PC serves the newer file then; see BluetoothSppServer.HandleMasterRequestAsync).
             _btnMasterCustomer.Click += (_, _) => OpenMaster(MasterKind.Customer);
             _btnMasterItem.Click += (_, _) => OpenMaster(MasterKind.Item);
-            _btnSyncMaster.Click += (_, _) => SyncMaster();
             _btnMasterAdd.Click += (_, _) => AddMasterRow();
             _btnMasterDelete.Click += (_, _) => DeleteMasterRows();
             _btnMasterSave.Click += (_, _) => SaveMaster();
@@ -180,7 +192,14 @@ namespace LeontecSyncLogSystem
             _cmbLang.SelectedIndexChanged += (_, _) =>
             {
                 if (_langReady && _cmbLang.SelectedIndex >= 0)
-                    Loc.SetLanguage((AppLang)_cmbLang.SelectedIndex);
+                {
+                    var lang = (AppLang)_cmbLang.SelectedIndex;
+                    Loc.SetLanguage(lang);
+                    // Persist back to configuration.xml so the config stays the single source of truth.
+                    _ui.Language = lang == AppLang.En ? "en" : "ja";
+                    try { _ui.Save(Services.AppPaths.AppConfigPath); }
+                    catch { /* best-effort: language still applies this session */ }
+                }
             };
         }
 
@@ -200,7 +219,6 @@ namespace LeontecSyncLogSystem
 
             _btnMasterCustomer.Text = Loc.T("btn_master_customer");
             _btnMasterItem.Text = Loc.T("btn_master_item");
-            _btnSyncMaster.Text = Loc.T("btn_master_sync");
             _btnMasterAdd.Text = Loc.T("btn_master_add");
             _btnMasterDelete.Text = Loc.T("btn_master_delete");
             _btnMasterSave.Text = Loc.T("btn_master_save");
@@ -223,6 +241,72 @@ namespace LeontecSyncLogSystem
                 c.HeaderText = ClientHeader(c.DataPropertyName);
             foreach (DataGridViewColumn c in _dgvCsv.Columns)
                 c.HeaderText = CsvHeader(c.DataPropertyName);
+        }
+
+        // ---------------- UI visibility (configuration.xml) ----------------
+
+        /// <summary>
+        /// Apply the <see cref="UiConfig"/> show/hide toggles (all default false): hide the toolbar
+        /// buttons, master buttons and the two left panels the operator hasn't opted into. When the
+        /// whole left column is empty, collapse it so the day-log table takes the full width.
+        /// </summary>
+        private void ApplyUiConfig()
+        {
+            _btnClear.Visible = _ui.ShowResetButton;
+            _btnOpenBackup.Visible = _ui.ShowOpenBackupButton;
+            _cmbLang.Visible = _ui.ShowLanguageButton;
+            _lblMysql.Visible = _ui.ShowMysqlStatus;
+
+            _btnMasterCustomer.Visible = _ui.ShowMasterButtons;
+            _btnMasterItem.Visible = _ui.ShowMasterButtons;
+
+            _grpClients.Visible = _ui.ShowBluetoothPanel;
+            _grpCsv.Visible = _ui.ShowCsvPanel;
+
+            // Collapse the left column's rows for the hidden pieces. When the CSV list is hidden but
+            // the devices list is shown, let the devices list fill the freed space (and vice-versa).
+            _leftLayout.RowStyles[0] = new RowStyle(SizeType.Absolute, _ui.ShowMasterButtons ? 40F : 0F);
+            if (_ui.ShowCsvPanel)
+            {
+                _leftLayout.RowStyles[1] = new RowStyle(SizeType.Absolute, _ui.ShowBluetoothPanel ? 230F : 0F);
+                _leftLayout.RowStyles[2] = new RowStyle(SizeType.Percent, 100F);
+            }
+            else
+            {
+                _leftLayout.RowStyles[1] = _ui.ShowBluetoothPanel
+                    ? new RowStyle(SizeType.Percent, 100F)
+                    : new RowStyle(SizeType.Absolute, 0F);
+                _leftLayout.RowStyles[2] = new RowStyle(SizeType.Absolute, 0F);
+            }
+
+            // Nothing on the left → collapse Panel1 entirely so only the right day-log panel shows.
+            _split.Panel1Collapsed =
+                !(_ui.ShowMasterButtons || _ui.ShowBluetoothPanel || _ui.ShowCsvPanel);
+        }
+
+        /// <summary>
+        /// Set the window/taskbar icon to the NEX logo (<c>app.ico</c> next to the exe) when present.
+        /// Best-effort: a missing or invalid icon must never stop the dashboard from opening.
+        /// </summary>
+        private void TryLoadAppIcon()
+        {
+            try
+            {
+                var ico = System.IO.Path.Combine(AppPaths.AppDir, "app.ico");
+                if (System.IO.File.Exists(ico))
+                    Icon = new Icon(ico);
+            }
+            catch { /* no icon / bad file → keep the default */ }
+        }
+
+        /// <summary>Probe the external MySQL and reflect it in the toolbar status label.</summary>
+        private async Task UpdateMysqlStatusAsync()
+        {
+            bool ok = await _monitor.IsDbConnectedAsync();
+            _lblMysql.Text = ok
+                ? Loc.T("mysql_connected", _mysqlEndpoint)
+                : Loc.T("mysql_disconnected", _mysqlEndpoint);
+            _lblMysql.ForeColor = ok ? Color.ForestGreen : Color.Firebrick;
         }
 
         private static string ClientHeader(string prop) => prop switch
@@ -258,6 +342,11 @@ namespace LeontecSyncLogSystem
             _busy = true;
             try
             {
+                // Probe the external MySQL first so the status label is correct even if the snapshot
+                // below throws (it queries the DB for the log totals). Only when the label is shown.
+                if (_ui.ShowMysqlStatus)
+                    await UpdateMysqlStatusAsync();
+
                 var status = await _monitor.GetSnapshotAsync();
 
                 _lblConn.Text = Loc.T("conn_running");
@@ -555,7 +644,16 @@ namespace LeontecSyncLogSystem
 
             CsvTableDto table;
             try { table = await _monitor.GetDayLogAsync(typeKey, date); }
-            catch (Exception ex) { _grpLogs.Text = Loc.T("err_load_daylog", ex.Message); return; }
+            catch (Exception ex)
+            {
+                // Most likely the external MySQL is down — show a clean, localized note instead of a
+                // raw EF exception, and clear the grid. Full detail goes to the log, not the header.
+                _grpLogs.Text = Loc.T("daylog_db_error");
+                _dgvLogs.DataSource = null;
+                _dayLogSig = "";   // retry the rebind on the next tick (e.g. once MySQL comes up)
+                System.Diagnostics.Debug.WriteLine($"Day-log load failed: {ex.Message}");
+                return;
+            }
 
             // Cheap signature: type + day + size. Aggregation is append-only per (type, day), so a
             // changed row count is enough to detect new data without re-rendering every 2s.
@@ -828,36 +926,6 @@ namespace LeontecSyncLogSystem
             catch (Exception ex)
             {
                 MessageBox.Show(Loc.T("master_save_error", ex.Message), Loc.T("error"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        /// <summary>
-        /// "Sync master": in Giai đoạn 1 the PC cannot open a Bluetooth connection to a phone (the PC
-        /// is the SPP server, the phone the client), so this saves any open edits and confirms the
-        /// masters are armed for delivery on the phones' NEXT sync (implemented in Giai đoạn 2). It
-        /// reports the current content version so the operator can see it changed after an edit.
-        /// </summary>
-        private void SyncMaster()
-        {
-            if (_masterDirty && _currentMaster is not null)
-            {
-                var ask = MessageBox.Show(Loc.T("master_sync_save_first"), Loc.T("btn_master_sync"),
-                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-                if (ask == DialogResult.Cancel) return;
-                if (ask == DialogResult.Yes) SaveMaster();
-            }
-
-            try
-            {
-                var version = _master.Version();
-                var shortVer = version.Length >= 8 ? version[..8] : version;
-                MessageBox.Show(Loc.T("master_sync_armed", shortVer), Loc.T("btn_master_sync"),
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(Loc.T("master_sync_error", ex.Message), Loc.T("error"),
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }

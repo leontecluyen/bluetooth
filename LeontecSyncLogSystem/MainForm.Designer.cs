@@ -27,17 +27,18 @@ namespace LeontecSyncLogSystem
         private Label _lblConn;
         private Label _lblUptime;
         private Label _lblTotals;
+        private Label _lblMysql;    // MySQL connection status (external DB); shown per configuration.xml
         private ComboBox _cmbLang;
 
         private TableLayoutPanel _root;
         private SplitContainer _split;        // draggable left/right divider (resizable panels)
         private TableLayoutPanel _leftLayout;
 
-        // Master toolbar (above the devices list): edit each master + push to phones.
+        // Master toolbar (above the devices list): open each master for editing. A saved master is
+        // delivered when a phone taps "receive master" (phone-initiated pull) — no push button.
         private TableLayoutPanel _masterBar;
         private Button _btnMasterCustomer;    // open 顧客マスタ in the right panel (editable)
         private Button _btnMasterItem;        // open 品目マスタ in the right panel (editable)
-        private Button _btnSyncMaster;        // arm the current masters for the next phone sync
 
         private GroupBox _grpClients;
         private TableLayoutPanel _clientsLayout;
@@ -87,6 +88,7 @@ namespace LeontecSyncLogSystem
             _lblConn = new Label();
             _lblUptime = new Label();
             _lblTotals = new Label();
+            _lblMysql = new Label();
             _cmbLang = new ComboBox();
             _root = new TableLayoutPanel();
             _split = new SplitContainer();
@@ -94,7 +96,6 @@ namespace LeontecSyncLogSystem
             _masterBar = new TableLayoutPanel();
             _btnMasterCustomer = new Button();
             _btnMasterItem = new Button();
-            _btnSyncMaster = new Button();
             _grpClients = new GroupBox();
             _clientsLayout = new TableLayoutPanel();
             _lblServer = new Label();
@@ -166,7 +167,7 @@ namespace LeontecSyncLogSystem
             _bar.Dock = DockStyle.Fill;
             _bar.Margin = new Padding(0);
             _bar.Padding = new Padding(4, 0, 4, 0);
-            _bar.ColumnCount = 7;
+            _bar.ColumnCount = 8;
             _bar.RowCount = 1;
             _bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 0 Reset
@@ -174,14 +175,16 @@ namespace LeontecSyncLogSystem
             _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 2 Conn
             _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 3 Uptime
             _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 4 Totals
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); // 5 flexible gap
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 6 Language combo
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 5 MySQL status
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); // 6 flexible gap
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 7 Language combo
             _bar.Controls.Add(_btnClear, 0, 0);
             _bar.Controls.Add(_btnOpenBackup, 1, 0);
             _bar.Controls.Add(_lblConn, 2, 0);
             _bar.Controls.Add(_lblUptime, 3, 0);
             _bar.Controls.Add(_lblTotals, 4, 0);
-            _bar.Controls.Add(_cmbLang, 6, 0);
+            _bar.Controls.Add(_lblMysql, 5, 0);
+            _bar.Controls.Add(_cmbLang, 7, 0);
 
             _btnClear.Anchor = AnchorStyles.Left;
             _btnClear.AutoSize = true;
@@ -209,6 +212,12 @@ namespace LeontecSyncLogSystem
             _lblTotals.AutoSize = true;
             _lblTotals.Margin = new Padding(14, 0, 0, 0);
             _lblTotals.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+
+            _lblMysql.Anchor = AnchorStyles.Left;
+            _lblMysql.AutoSize = true;
+            _lblMysql.Margin = new Padding(14, 0, 0, 0);
+            _lblMysql.ForeColor = Color.DimGray;
+            _lblMysql.Text = "● MySQL";
 
             _cmbLang.Anchor = AnchorStyles.Right;
             _cmbLang.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -251,22 +260,20 @@ namespace LeontecSyncLogSystem
             _leftLayout.Controls.Add(_grpClients, 0, 1);
             _leftLayout.Controls.Add(_grpCsv, 0, 2);
 
-            // _masterBar — the master toolbar sitting directly above the devices list. Three
-            // AutoSize'd buttons anchored left: [Customer master][Item master] open a master in the
-            // right panel for editing; [Sync master] arms the current masters for the next phone sync.
+            // _masterBar — the master toolbar sitting directly above the devices list. Two AutoSize'd
+            // buttons anchored left: [Customer master][Item master] open a master in the right panel
+            // for editing. A saved master is delivered on the phone's next "receive master" request.
             _masterBar.Dock = DockStyle.Fill;
             _masterBar.Margin = new Padding(3, 3, 3, 0);
             _masterBar.Padding = new Padding(0);
-            _masterBar.ColumnCount = 4;
+            _masterBar.ColumnCount = 3;
             _masterBar.RowCount = 1;
             _masterBar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             _masterBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 0 Customer
             _masterBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 1 Item
-            _masterBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 2 Sync
-            _masterBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); // 3 flexible gap
+            _masterBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); // 2 flexible gap
             _masterBar.Controls.Add(_btnMasterCustomer, 0, 0);
             _masterBar.Controls.Add(_btnMasterItem, 1, 0);
-            _masterBar.Controls.Add(_btnSyncMaster, 2, 0);
 
             _btnMasterCustomer.Anchor = AnchorStyles.Left;
             _btnMasterCustomer.AutoSize = true;
@@ -277,12 +284,6 @@ namespace LeontecSyncLogSystem
             _btnMasterItem.AutoSize = true;
             _btnMasterItem.Margin = new Padding(0, 0, 6, 0);
             _btnMasterItem.Text = "Item master";
-
-            _btnSyncMaster.Anchor = AnchorStyles.Left;
-            _btnSyncMaster.AutoSize = true;
-            _btnSyncMaster.Margin = new Padding(0, 0, 6, 0);
-            _btnSyncMaster.ForeColor = Color.SteelBlue;
-            _btnSyncMaster.Text = "Sync master";
 
             // _grpClients — server-state label (top) + the clients grid.
             _grpClients.Dock = DockStyle.Fill;
@@ -502,7 +503,7 @@ namespace LeontecSyncLogSystem
             ClientSize = new Size(1626, 760);
             MinimumSize = new Size(880, 540);
             StartPosition = FormStartPosition.CenterScreen;
-            Text = "Leontec Sync Monitor";
+            Text = "ログ管理";
             Controls.Add(_root);
 
             _bar.ResumeLayout(false);

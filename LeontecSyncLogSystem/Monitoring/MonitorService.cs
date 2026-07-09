@@ -45,6 +45,27 @@ namespace LeontecSyncLogSystem.Monitoring
             return deleted;
         }
 
+        /// <summary>
+        /// Lightweight liveness probe for the EXTERNAL MySQL server: opens a connection and reports
+        /// whether it succeeds. Never throws — a failure (server down, wrong credentials in mysql.xml,
+        /// etc.) is logged at Warning and returned as <c>false</c> so the dashboard can show
+        /// "MySQL: disconnected" without erroring the whole refresh.
+        /// </summary>
+        public async Task<bool> IsDbConnectedAsync(CancellationToken token = default)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                return await db.Database.CanConnectAsync(token);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("MySQL connectivity check failed: {Msg}", ex.Message);
+                return false;
+            }
+        }
+
         public async Task<StatusDto> GetSnapshotAsync(CancellationToken token = default)
         {
             var now = DateTime.UtcNow;
@@ -52,8 +73,27 @@ namespace LeontecSyncLogSystem.Monitoring
             var todayLocal = DateTime.Today;
             var tomorrowLocal = todayLocal.AddDays(1);
 
-            using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            // The log totals are the ONLY DB-backed part of the snapshot; everything else comes from
+            // the in-memory ServiceStatus. The external MySQL may be down, so a query failure must NOT
+            // fail the whole snapshot — degrade to 0/0 (and the toolbar shows "MySQL: disconnected")
+            // instead of throwing a scary EF error onto the dashboard's status line.
+            var logs = new LogsDto();
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                // Count CSV log rows (the real data) from the current, non-superseded uploads.
+                logs.Total = await db.CsvUploads.Where(u => !u.Superseded)
+                    .SumAsync(u => (int?)u.RowCount, token) ?? 0;
+                logs.Today = await db.CsvUploads
+                    .Where(u => !u.Superseded && u.LogDate != null
+                             && u.LogDate >= todayLocal && u.LogDate < tomorrowLocal)
+                    .SumAsync(u => (int?)u.RowCount, token) ?? 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Log totals unavailable (external MySQL not reachable?): {Msg}", ex.Message);
+            }
 
             return new StatusDto
             {
@@ -82,16 +122,7 @@ namespace LeontecSyncLogSystem.Monitoring
                     Sessions = c.Sessions,
                     Heartbeats = c.Heartbeats,
                 }).ToList(),
-                Logs = new LogsDto
-                {
-                    // Count CSV log rows (the real data) from the current, non-superseded uploads.
-                    Total = await db.CsvUploads.Where(u => !u.Superseded)
-                        .SumAsync(u => (int?)u.RowCount, token) ?? 0,
-                    Today = await db.CsvUploads
-                        .Where(u => !u.Superseded && u.LogDate != null
-                                 && u.LogDate >= todayLocal && u.LogDate < tomorrowLocal)
-                        .SumAsync(u => (int?)u.RowCount, token) ?? 0,
-                },
+                Logs = logs,
             };
         }
 

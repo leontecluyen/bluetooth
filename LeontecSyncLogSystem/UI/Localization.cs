@@ -115,15 +115,18 @@ namespace LeontecSyncLogSystem.UI
             ["daylog_header"] = "{0} — {1} — {2} rows",
             ["daylog_dups"] = ", {0} duplicate rows",
             ["err_load_daylog"] = "Error loading day log: {0}",
+            ["daylog_db_error"] = "Day log — cannot reach the database (is MySQL running?)",
             ["export_done"] = "Exported {0} rows to:\n{1}",
             ["export_empty"] = "Nothing to export (no rows shown).",
             ["export_error"] = "Export failed: {0}",
             ["menu_language"] = "Language",
+            ["mysql_checking"] = "● MySQL: checking…",
+            ["mysql_connected"] = "● MySQL: connected ({0})",
+            ["mysql_disconnected"] = "× MySQL: disconnected ({0})",
 
-            // Master editing (customer / item master files, editable + pushed to phones).
+            // Master editing (customer / item master files, editable; pulled by the phone).
             ["btn_master_customer"] = "Customer master",
             ["btn_master_item"] = "Item master",
-            ["btn_master_sync"] = "Sync master",
             ["btn_master_add"] = "Add row",
             ["btn_master_delete"] = "Delete row",
             ["btn_master_save"] = "Save",
@@ -135,13 +138,6 @@ namespace LeontecSyncLogSystem.UI
             ["master_saved"] = "Saved {0} — {1} rows.",
             ["master_save_error"] = "Save failed: {0}",
             ["master_discard_confirm"] = "Discard unsaved changes to the master?",
-            ["master_sync_save_first"] = "The master has unsaved changes. Save them before syncing?",
-            ["master_sync_armed"] =
-                "Master is ready (version {0}).\n\n" +
-                "The PC cannot push to a phone that isn't connected, so the masters will be delivered " +
-                "to each phone on its NEXT sync (this over-Bluetooth delivery is Giai đoạn 2 — not " +
-                "wired yet).",
-            ["master_sync_error"] = "Sync failed: {0}",
         };
 
         // ---------------- 日本語 ----------------
@@ -196,15 +192,18 @@ namespace LeontecSyncLogSystem.UI
             ["daylog_header"] = "{0} — {1} — {2} 行",
             ["daylog_dups"] = "、重複 {0} 行",
             ["err_load_daylog"] = "当日ログ読込エラー: {0}",
+            ["daylog_db_error"] = "当日のログ — データベースに接続できません（MySQLは起動中ですか？）",
             ["export_done"] = "{0} 行をエクスポートしました:\n{1}",
             ["export_empty"] = "エクスポートする行がありません。",
             ["export_error"] = "エクスポート失敗: {0}",
             ["menu_language"] = "言語",
+            ["mysql_checking"] = "● MySQL: 確認中…",
+            ["mysql_connected"] = "● MySQL: 接続済み ({0})",
+            ["mysql_disconnected"] = "× MySQL: 未接続 ({0})",
 
-            // マスタ編集（顧客・品目マスタの編集と端末への配信）
+            // マスタ編集（顧客・品目マスタの編集。端末がプルして取得）
             ["btn_master_customer"] = "顧客マスタ",
             ["btn_master_item"] = "品目マスタ",
-            ["btn_master_sync"] = "マスタ同期",
             ["btn_master_add"] = "行追加",
             ["btn_master_delete"] = "行削除",
             ["btn_master_save"] = "保存",
@@ -216,12 +215,6 @@ namespace LeontecSyncLogSystem.UI
             ["master_saved"] = "{0} を保存しました — {1} 行。",
             ["master_save_error"] = "保存に失敗しました: {0}",
             ["master_discard_confirm"] = "マスタの未保存の変更を破棄しますか？",
-            ["master_sync_save_first"] = "マスタに未保存の変更があります。同期前に保存しますか？",
-            ["master_sync_armed"] =
-                "マスタの準備ができました（バージョン {0}）。\n\n" +
-                "PCは未接続の端末へ送信できないため（PCがSPPサーバー、端末がクライアント）、" +
-                "各端末が次回同期したときにマスタが配信されます（Bluetooth配信は Giai đoạn 2 — 未実装）。",
-            ["master_sync_error"] = "同期に失敗しました: {0}",
         };
     }
 
@@ -231,17 +224,7 @@ namespace LeontecSyncLogSystem.UI
     /// </summary>
     internal static class LanguageStore
     {
-        private static string FilePath
-        {
-            get
-            {
-                var dir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "LeontecSyncLogSystem");
-                Directory.CreateDirectory(dir);
-                return Path.Combine(dir, "ui-language.txt");
-            }
-        }
+        private static string FilePath => Services.AppPaths.AppDataFile("ui-language.txt");
 
         public static AppLang? Load()
         {

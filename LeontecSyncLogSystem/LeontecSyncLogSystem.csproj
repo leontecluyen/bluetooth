@@ -19,6 +19,19 @@
     <AssemblyName>LeontecSyncLogSystem</AssemblyName>
     <!-- Roll forward to the newest installed patch/major if the exact 10.0 build is missing. -->
     <RollForward>LatestMajor</RollForward>
+    <!-- Output folder = "LogManagement" instead of the raw TFM name (net10.0-windows10.0.19041.0).
+         This is the deployed "app/" folder: exe lives in bin/<Config>/LogManagement/, and AppPaths
+         puts _master/_backup/mysql.xml in its parent (bin/<Config>/). -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin\$(Configuration)\LogManagement\</OutputPath>
+    <!-- Turn OFF Visual Studio's fast up-to-date check so pressing Debug/Run (F5) always invokes the
+         Build target — otherwise VS skips it when nothing changed and our post-build targets
+         (CopyMasterSeedToRoot + CreateRootShortcut) wouldn't re-run. This makes the master seed +
+         the root .lnk shortcut regenerate on EVERY Build AND every Debug/Run. -->
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
+    <!-- App/window icon = the NEX logo. Applied ONLY when app.ico exists so a fresh checkout without
+         the icon still builds (drop the NEX logo as LeontecSyncLogSystem/app.ico to enable it). -->
+    <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -56,19 +69,46 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <!-- Seed copies of the two master CSVs (taken from the Android app's assets). Copied next to
-         the exe so MasterStore can seed %LOCALAPPDATA%/.../master on first run. -->
+         the exe so MasterStore can seed <root>/_master on first run. -->
     <None Update="master-seed\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- NEX logo icon (optional; see ApplicationIcon above). Copied next to the exe so MainForm can
+         also set it as the window icon at runtime. -->
+    <None Update="app.ico" Condition="Exists('app.ico')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 
-  <!-- Bundled MariaDB server (not committed to git; see .gitignore). Copied next to the exe so the
-       app is self-contained. PreserveNewest avoids recopying ~hundreds of MB on every build. -->
-  <ItemGroup>
-    <None Include="mariadb\**\*" Condition="Exists('mariadb')">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>mariadb\%(RecursiveDir)%(Filename)%(Extension)</Link>
-    </None>
-  </ItemGroup>
+  <!-- Seed the two master CSVs into <root>/_master (sibling of the app folder) on EVERY build, so a
+       freshly-built layout always has the masters present without opening the app. $(OutDir) is
+       bin/<Config>/LogManagement/, so $(OutDir)..\_master resolves to bin/<Config>/_master.
+       SkipUnchangedFiles=false ⇒ re-copied every build (overwrites), as requested. -->
+  <Target Name="CopyMasterSeedToRoot" AfterTargets="Build">
+    <ItemGroup>
+      <_MasterSeedCsv Include="master-seed\*.csv" />
+    </ItemGroup>
+    <MakeDir Directories="$(OutDir)..\_master" />
+    <Copy SourceFiles="@(_MasterSeedCsv)"
+          DestinationFolder="$(OutDir)..\_master"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true" />
+    <Message Importance="high" Text="Seeded master CSVs → $(OutDir)..\_master (@(_MasterSeedCsv->'%(Filename)%(Extension)', ', '))" />
+  </Target>
+
+  <!-- Create a .lnk shortcut to the exe in <root> (parent of the app folder), so the tool can be
+       launched without opening the LogManagement folder. Re-created on every build. The target path
+       is absolute, but WScript.Shell also stores the relative path (shortcut + exe share the tree),
+       so the shortcut still resolves if the whole <root> folder is moved/copied elsewhere. -->
+  <Target Name="CreateRootShortcut" AfterTargets="Build">
+    <PropertyGroup>
+      <_ExeFull>$([System.IO.Path]::GetFullPath('$(OutDir)LeontecSyncLogSystem.exe'))</_ExeFull>
+      <_RootFull>$([System.IO.Path]::GetFullPath('$(OutDir)..'))</_RootFull>
+      <_WorkDir>$([System.IO.Path]::GetFullPath('$(OutDir)'))</_WorkDir>
+      <_LnkPath>$(_RootFull)\Log Management.lnk</_LnkPath>
+    </PropertyGroup>
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut('$(_LnkPath)'); $sc.TargetPath = '$(_ExeFull)'; $sc.WorkingDirectory = '$(_WorkDir)'; $sc.IconLocation = '$(_ExeFull),0'; $sc.Description = 'Leontec Log Management'; $sc.Save()&quot;" />
+    <Message Importance="high" Text="Created shortcut → $(_LnkPath)" />
+  </Target>
 
 </Project>

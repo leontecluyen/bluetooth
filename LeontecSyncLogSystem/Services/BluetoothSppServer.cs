@@ -36,23 +36,53 @@ namespace LeontecSyncLogSystem.Services
         private const string BatchEnd = "BATCH_END";
         private const string BatchResultHeader = "RESULT";
 
+        // Master reverse-sync (PC → phone). The phone opens a connection and sends
+        // "MASTER_REQ\n<name>=<pcMtimeMillis>\n…" — the value it stored the LAST time the PC sent that
+        // file (a PC-clock timestamp; 0 if never). For each master whose PC file mtime is now GREATER
+        // than that stored value the PC streams a file frame "STX + <name>\t<pcMtimeMillis>\r\n + <csv>
+        // + ETX" (the phone stores that <pcMtimeMillis> and echoes it next time), then a closing frame
+        // "MASTER_END\n<name>=UPDATED|UPTODATE\n…" reporting each master's status. Because BOTH sides
+        // of the comparison are PC-clock values, phone/PC clock skew can't break it. Delivery is always
+        // phone-initiated (the phone taps "receive master") — the PC never opens a connection to a
+        // phone, so there's no push-from-PC. See docs/04.
+        private const string MasterRequest = "MASTER_REQ";
+        private const string MasterEnd = "MASTER_END";
+        private const string MasterUpdated = "UPDATED";     // PC had a newer copy → the file was sent
+        private const string MasterUpToDate = "UPTODATE";   // the phone's copy is already current
+
         private readonly ServiceStatus _status;
         private readonly ICsvStore _csvStore;
         private readonly IDeviceStore _deviceStore;
         private readonly ICsvBackupWriter _backup;
+        private readonly IMasterStore _master;
         private readonly string _serviceName;
         private readonly ILogger _logger;
 
         public BluetoothSppServer(
             ServiceStatus status, ICsvStore csvStore, IDeviceStore deviceStore,
-            ICsvBackupWriter backup, string serviceName, ILogger logger)
+            ICsvBackupWriter backup, IMasterStore master, string serviceName, ILogger logger)
         {
             _status = status;
             _csvStore = csvStore;
             _deviceStore = deviceStore;
             _backup = backup;
+            _master = master;
             _serviceName = serviceName;
             _logger = logger;
+        }
+
+        /// <summary>
+        /// One live SPP connection: its stream + a lock that serializes writes to it. The reply
+        /// writes (PONG / RESULT / master files) all happen on the connection's own read loop, so the
+        /// lock is only defensive — but it keeps every write path uniform through
+        /// <see cref="SendTextFrameAsync"/>.
+        /// </summary>
+        private sealed class ActiveConn
+        {
+            public required Stream Stream { get; init; }
+            public required string Name { get; init; }
+            public required string Address { get; init; }
+            public SemaphoreSlim WriteLock { get; } = new(1, 1);
         }
 
         public async Task RunAsync(CancellationToken token)
@@ -149,24 +179,38 @@ namespace LeontecSyncLogSystem.Services
             // when the phone sends BATCH_END.
             var batch = new List<(string file, bool ok)>();
 
+            ActiveConn? conn = null;
             try
             {
                 using (client)
                 using (var stream = client.GetStream())
                 {
+                    // Wrap the stream so all reply writes go through one serialized helper.
+                    conn = new ActiveConn { Stream = stream, Name = name, Address = address };
+
                     int read;
                     while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token)) > 0)
                     {
                         foreach (var frame in decoder.Push(buffer, read))
                         {
+                            // Log EVERY inbound frame (first line + length) so req/res can be traced.
+                            _logger.LogInformation(
+                                "BT RECV from {Name} ({Addr}): {Len} chars, first line: \"{First}\"",
+                                name, address, frame.Length, FirstLine(frame));
+
                             if (IsHeartbeat(frame))
                             {
-                                await HandleHeartbeatAsync(frame, stream, cs, name, address, token);
+                                await HandleHeartbeatAsync(frame, conn, cs, name, address, token);
+                            }
+                            else if (IsMasterRequest(frame))
+                            {
+                                // Phone asks for master files → send the ones the PC has newer of.
+                                await HandleMasterRequestAsync(frame, conn, name, address, token);
                             }
                             else if (IsBatchEnd(frame))
                             {
                                 // Phone finished the batch → reply once with all files' outcomes.
-                                await SendBatchResultAsync(stream, batch, name, address, token);
+                                await SendBatchResultAsync(conn, batch, name, address, token);
                                 batch.Clear();
                             }
                             else
@@ -205,13 +249,16 @@ namespace LeontecSyncLogSystem.Services
         private static bool IsBatchEnd(string frame) =>
             frame.Trim().Equals(BatchEnd, StringComparison.OrdinalIgnoreCase);
 
+        private static bool IsMasterRequest(string frame) =>
+            frame.StartsWith(MasterRequest, StringComparison.OrdinalIgnoreCase);
+
         /// <summary>
         /// Handles a liveness ping ("PING,&lt;deviceName&gt;,&lt;epochMillis&gt;"): records it on the
         /// client status and replies with a framed "PONG,&lt;radioName&gt;,&lt;epochMillis&gt;" so the
         /// phone can confirm the listener is alive and responding (not just RFCOMM-reachable).
         /// </summary>
         private async Task HandleHeartbeatAsync(
-            string frame, Stream stream, BtClientStatus cs, string name, string address, CancellationToken token)
+            string frame, ActiveConn conn, BtClientStatus cs, string name, string address, CancellationToken token)
         {
             // frame = PING,<deviceName>,<epochMillis> — pull the device name so the dashboard
             // can label a phone that has only ever pinged (never sent a CSV).
@@ -227,16 +274,7 @@ namespace LeontecSyncLogSystem.Services
             {
                 var radio = _status.RadioName ?? _serviceName ?? "";
                 var nowMillis = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                var reply = $"{HeartbeatPong},{radio},{nowMillis}";
-                var body = Encoding.UTF8.GetBytes(reply);
-
-                var packet = new byte[body.Length + 2];
-                packet[0] = FrameDecoder.STX;
-                Array.Copy(body, 0, packet, 1, body.Length);
-                packet[^1] = FrameDecoder.ETX;
-
-                await stream.WriteAsync(packet, token);
-                await stream.FlushAsync(token);
+                await SendTextFrameAsync(conn, $"{HeartbeatPong},{radio},{nowMillis}", token);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -246,6 +284,132 @@ namespace LeontecSyncLogSystem.Services
                 _logger.LogWarning(
                     "Failed to send PONG to {Name} ({Addr}): {Msg}", name, address, ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Handle a master pull request. The frame is
+        /// <c>MASTER_REQ\n&lt;name&gt;=&lt;lastModifiedMillis&gt;\n…</c> carrying the phone's current master
+        /// files' last-modified time. For each master the PC modified more recently (PC mtime &gt; the
+        /// phone's value, or the phone doesn't have it) the PC streams the file; then a single
+        /// <c>MASTER_END\n&lt;name&gt;=UPDATED|UPTODATE\n…</c> frame reports every master's status so the
+        /// phone can show an accurate message (updated N / already current).
+        /// </summary>
+        private async Task HandleMasterRequestAsync(
+            string frame, ActiveConn conn, string name, string address, CancellationToken token)
+        {
+            // Full request/response logging so we can diagnose the "always up-to-date" report
+            // (e.g. a phone clock running ahead of the PC). Logged at Information so it shows in the
+            // console without turning on Debug.
+            _logger.LogInformation(
+                "MASTER_REQ from {Name} ({Addr}) — raw frame:\n{Frame}", name, address, frame);
+            var appTimes = ParseMasterRequest(frame);
+            var statuses = new List<string>();
+            int sent = 0;
+            try
+            {
+                foreach (var kind in new[] { MasterKind.Customer, MasterKind.Item })
+                {
+                    var fileName = _master.FileName(kind);
+                    long appMillis = appTimes.TryGetValue(fileName, out var t) ? t : 0;
+                    long pcMillis = _master.LastModifiedUnixMillis(kind);
+                    bool newer = pcMillis > appMillis;
+                    // ISO forms make the clock comparison human-readable in the log.
+                    _logger.LogInformation(
+                        "MASTER compare {File}: pc-mtime={Pc} ({PcIso}) vs app-mtime={App} ({AppIso}) → {Decision}",
+                        fileName, pcMillis, IsoUtc(pcMillis), appMillis, IsoUtc(appMillis),
+                        newer ? "SEND (pc newer)" : "SKIP (app >= pc)");
+
+                    if (newer)
+                    {
+                        var file = _master.Load(kind);
+                        // Line 1 carries the PC-origin mtime so the phone stores IT (not its own clock)
+                        // and echoes it back next time — keeps the compare in the PC clock domain.
+                        await SendTextFrameAsync(conn, fileName + "\t" + pcMillis + "\r\n" + file.Csv, token);
+                        sent++;
+                        statuses.Add($"{fileName}={MasterUpdated}");
+                        _logger.LogInformation(
+                            "MASTER → {Name} ({Addr}): SENT {File} ({Bytes} chars).",
+                            name, address, fileName, file.Csv.Length);
+                    }
+                    else
+                    {
+                        statuses.Add($"{fileName}={MasterUpToDate}");
+                    }
+                }
+                // Closing frame carries EVERY master's status so the phone can report accurately.
+                var endPayload = MasterEnd + "\n" + string.Join("\n", statuses);
+                await SendTextFrameAsync(conn, endPayload, token);
+                _logger.LogInformation(
+                    "MASTER_END → {Name} ({Addr}): {Sent} file(s) sent. Response frame:\n{Frame}",
+                    name, address, sent, endPayload);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    "Failed to serve master request from {Name} ({Addr}): {Msg}", name, address, ex.Message);
+            }
+        }
+
+        /// <summary>Epoch ms → readable UTC ISO for logs; "(none)" when 0/absent.</summary>
+        private static string IsoUtc(long millis) =>
+            millis <= 0 ? "(none)" : DateTimeOffset.FromUnixTimeMilliseconds(millis).UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss'Z'");
+
+        /// <summary>Parse "MASTER_REQ\n&lt;name&gt;=&lt;millis&gt;\n…" into a name→last-modified map.</summary>
+        private static Dictionary<string, long> ParseMasterRequest(string frame)
+        {
+            var map = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var lines = frame.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            foreach (var line in lines)
+            {
+                var l = line.Trim();
+                if (l.Length == 0 || l.Equals(MasterRequest, StringComparison.OrdinalIgnoreCase)) continue;
+                int eq = l.LastIndexOf('=');
+                if (eq <= 0) continue;
+                var key = l[..eq].Trim();
+                if (long.TryParse(l[(eq + 1)..].Trim(), out var millis))
+                    map[key] = millis;
+            }
+            return map;
+        }
+
+        /// <summary>
+        /// Write one STX/ETX-framed text payload to a connection, serialized by its write lock so it
+        /// never interleaves with another writer (PONG/RESULT from the read loop, or a concurrent push).
+        /// </summary>
+        private async Task SendTextFrameAsync(ActiveConn conn, string payload, CancellationToken token)
+        {
+            // Log EVERY outbound frame (first line + length) so req/res can be traced.
+            _logger.LogInformation(
+                "BT SEND to {Name} ({Addr}): {Len} chars, first line: \"{First}\"",
+                conn.Name, conn.Address, payload.Length, FirstLine(payload));
+
+            var body = Encoding.UTF8.GetBytes(payload);
+            var packet = new byte[body.Length + 2];
+            packet[0] = FrameDecoder.STX;
+            Array.Copy(body, 0, packet, 1, body.Length);
+            packet[^1] = FrameDecoder.ETX;
+
+            await conn.WriteLock.WaitAsync(token);
+            try
+            {
+                await conn.Stream.WriteAsync(packet, token);
+                await conn.Stream.FlushAsync(token);
+            }
+            finally
+            {
+                conn.WriteLock.Release();
+            }
+        }
+
+        /// <summary>First line of a frame (for concise req/res logging).</summary>
+        private static string FirstLine(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            int nl = s.IndexOfAny(new[] { '\r', '\n' });
+            return nl < 0 ? s : s[..nl];
         }
 
         /// <summary>
@@ -345,7 +509,7 @@ namespace LeontecSyncLogSystem.Services
         /// actually landed. Best-effort.
         /// </summary>
         private async Task SendBatchResultAsync(
-            Stream stream, List<(string file, bool ok)> batch, string name, string address, CancellationToken token)
+            ActiveConn conn, List<(string file, bool ok)> batch, string name, string address, CancellationToken token)
         {
             try
             {
@@ -353,13 +517,7 @@ namespace LeontecSyncLogSystem.Services
                 foreach (var (file, ok) in batch)
                     sb.Append(file).Append('=').Append(ok ? "OK" : "ERR").Append('\n');
 
-                var body = Encoding.UTF8.GetBytes(sb.ToString());
-                var packet = new byte[body.Length + 2];
-                packet[0] = FrameDecoder.STX;
-                Array.Copy(body, 0, packet, 1, body.Length);
-                packet[^1] = FrameDecoder.ETX;
-                await stream.WriteAsync(packet, token);
-                await stream.FlushAsync(token);
+                await SendTextFrameAsync(conn, sb.ToString(), token);
                 _logger.LogInformation(
                     "Sent batch RESULT to {Name} ({Addr}): {Count} file(s), OK={Ok}.",
                     name, address, batch.Count, batch.Count(b => b.ok));

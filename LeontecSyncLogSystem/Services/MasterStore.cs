@@ -1,5 +1,4 @@
 using System.IO;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace LeontecSyncLogSystem.Services
@@ -48,10 +47,11 @@ namespace LeontecSyncLogSystem.Services
         void Save(MasterKind kind, string csv);
 
         /// <summary>
-        /// Content version across BOTH master files (SHA-256, hex). Changes only when a byte does,
-        /// so the phone can compare and skip re-import when it already has this version.
+        /// The master file's last-modified time as Unix epoch milliseconds (0 if it doesn't exist
+        /// yet). The reverse-sync compares this against the phone's file last-modified time — a more
+        /// recent PC time means the phone should pull the file.
         /// </summary>
-        string Version();
+        long LastModifiedUnixMillis(MasterKind kind);
     }
 
     /// <inheritdoc cref="IMasterStore"/>
@@ -119,21 +119,18 @@ namespace LeontecSyncLogSystem.Services
             _logger.LogInformation("Saved master {Kind} to {Path} ({Bytes} bytes).", kind, path, csv.Length);
         }
 
-        public string Version()
+        public long LastModifiedUnixMillis(MasterKind kind)
         {
+            var path = Path.Combine(Root, FileName(kind));
             lock (_gate)
             {
-                using var sha = SHA256.Create();
-                var sb = new StringBuilder();
-                foreach (var kind in new[] { MasterKind.Customer, MasterKind.Item })
-                {
-                    // Load() seeds missing files, so the version is stable from first run.
-                    var bytes = Utf8NoBom.GetBytes(Load(kind).Csv);
-                    sha.TransformBlock(bytes, 0, bytes.Length, null, 0);
-                }
-                sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-                foreach (var b in sha.Hash!) sb.Append(b.ToString("x2"));
-                return sb.ToString();
+                // Seed a missing file first so a fresh checkout still reports a real timestamp.
+                if (!File.Exists(path))
+                    SeedFromBundle(kind, path);
+                if (!File.Exists(path))
+                    return 0;
+                var utc = File.GetLastWriteTimeUtc(path);
+                return new DateTimeOffset(utc, TimeSpan.Zero).ToUnixTimeMilliseconds();
             }
         }
 

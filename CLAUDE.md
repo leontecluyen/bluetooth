@@ -27,24 +27,66 @@ LeontecSyncLogSystem/
   MainForm.Designer.cs  Designer-pattern layout skeleton (InitializeComponent) so the WinForms
                         Designer can render it; DI/data/localization stay in MainForm.cs
   Worker.cs             BackgroundService: spawns one serial listener per COM port
-  appsettings.json      Sync (BluetoothServiceName + BackupFolder), Database (embedded MariaDB), Kestrel
+  appsettings.json      Sync (BluetoothServiceName + BackupFolder), Kestrel, Logging
+                        (DB settings are NOT here — external MySQL, see mysql.xml below)
   Data/AppDbContext.cs  EF Core context; typed tables (csv_uploads + normalized rows + devices)
   Data/DesignTimeDbContextFactory.cs  lets `dotnet ef` build the context without booting the app
   Data/Migrations/      EF Core migrations (schema source of truth; applied via Migrate() at startup)
   Services/
-    SyncOptions.cs        SyncOptions (BluetoothServiceName + BackupFolder) + DatabaseOptions (embedded)
+    AppPaths.cs           resolves the on-disk layout (app dir + <root>/_master,_backup,mysql.xml)
+    SyncOptions.cs        SyncOptions (BluetoothServiceName + BackupFolder); no DB options anymore
+    MySqlConfig.cs        reads <root>/mysql.xml (host/port/db/user/pass) → connection string + status
     CsvBackupWriter.cs    writes a raw copy of each received CSV to disk (backup, best-effort)
     MasterStore.cs        PC-owned source of truth for the 2 master CSVs (customer/item): load/save
                           (UTF-8 no BOM) + first-run seed from master-seed/ + SHA-256 Version()
-    EmbeddedMariaDbServer.cs  runs the bundled MariaDB as a managed child process (self-contained DB)
     FrameDecoder.cs       STX/ETX byte framing (pure, testable)
     BluetoothSppServer.cs  32feet.NET RFCOMM SPP server, multi-client accept loop
     CsvInbox.cs           in-memory, capped list of received CSV uploads (+ their rows)
     ServiceStatus.cs      thread-safe live state (BT clients + server status), singleton
   Monitoring/
-    MonitorService.cs     builds a StatusDto snapshot from ServiceStatus + CsvInbox + DB
+    MonitorService.cs     builds a StatusDto snapshot from ServiceStatus + CsvInbox + DB;
+                          IsDbConnectedAsync() = external-MySQL liveness probe for the status label
     StatusModels.cs       StatusDto/BtServerDto/ClientDto/ReceivedCsvDto/LogsDto (UI + /api/status)
+  UI/
+    Localization.cs       Loc.T(key) EN/JA + language persistence (ui-language.txt in the app dir)
+    UiConfig.cs           reads app/configuration.xml (7 show/hide toggles, all default false)
 ```
+
+**On-disk layout (same for debug & Release; NOT under `%LOCALAPPDATA%`).** The exe lives in an
+`app/` folder; the data folders + config files are its siblings/children (resolved by
+`Services/AppPaths.cs`, anchored on `AppContext.BaseDirectory`):
+
+```
+<root>/
+  _master/            editable master CSVs (customer/item)        (AppPaths.MasterDir)
+  _backup/            per-day raw copies of received CSVs          (AppPaths.BackupDir)
+  mysql.xml           external MySQL connection settings           (AppPaths.MySqlConfigPath)
+  Log Management.lnk  shortcut → LogManagement/…exe (launch here)  (CreateRootShortcut target)
+  LogManagement/      the whole PC tool (exe + files) = "app/"     (AppPaths.AppDir)
+    configuration.xml UI config (language + show/hide toggles)     (AppPaths.AppConfigPath)
+    ui-language.txt   persisted UI language;  crash.log
+```
+
+The exe folder is named **`LogManagement`** (not the raw TFM): the csproj sets
+`AppendTargetFrameworkToOutputPath=false` + `OutputPath=bin\<Config>\LogManagement\`. So in a dev build
+the exe sits in `bin/<Config>/LogManagement/` and `_master`/`_backup`/`mysql.xml` land in
+`bin/<Config>/` — the same relative shape as a deployed layout. Missing config files/data folders are
+created with defaults on first run. **The two master CSVs are copied into `<root>/_master`** by the
+`CopyMasterSeedToRoot` MSBuild target (source: `master-seed/`, overwrite) and a **`Log Management.lnk`
+shortcut** to the exe is (re)created in `<root>` by the `CreateRootShortcut` target (PowerShell +
+WScript.Shell) so the tool launches without entering `LogManagement/` (it stores a relative path too,
+so it survives moving the whole `<root>` folder). Both targets are `AfterTargets="Build"` and run on
+**every Build AND every Debug/Run** — `DisableFastUpToDateCheck=true` stops VS from skipping the build
+(and thus these targets) when nothing changed.
+
+**UI config (`app/configuration.xml`, `UI/UiConfig.cs`).** A `<language>` element (**default `ja`**;
+`ja`/`en`) is the **authoritative UI language** — applied at startup via `Loc.SetLanguage` (overrides
+OS detection / `ui-language.txt`); a runtime change from the language combo is written back here so
+the config stays the single source. Plus seven show/hide toggles, **all default `false` (hidden)**:
+`showResetButton`, `showOpenBackupButton`, `showLanguageButton`, `showMasterButtons` (the 2 master
+buttons), `showBluetoothPanel` (top-left panel), `showCsvPanel` (bottom-left panel), `showMysqlStatus`
+(toolbar MySQL-status label). With every toggle false the left column collapses entirely and only the
+right day-log table shows. Applied once at startup by `MainForm.ApplyUiConfig()`.
 
 Dashboard layout: left-top = Bluetooth clients + server state; **left-bottom = list of received
 CSV uploads** (one row per Bluetooth frame, informational only now); **right = the FULL LOG OF ONE
@@ -58,7 +100,7 @@ back to the received-local date).
 **Localized UI (EN / JA).** All dashboard text goes through `UI/Localization.cs` (`Loc.T(key)`);
 a language combo in the toolbar switches at runtime (`Loc.Changed` → `ApplyTexts`). First-run
 language follows the OS UI culture (ja → Japanese, else English); the choice persists to
-`%LOCALAPPDATA%/LeontecSyncLogSystem/ui-language.txt`. (Vietnamese was dropped from the PC tool;
+`ui-language.txt` **in the app folder** (`AppPaths.AppDataFile`). (Vietnamese was dropped from the PC tool;
 if `ui-language.txt` still holds a stale `Vi`, it no longer parses and falls back to OS detection.)
 The Android app still offers three languages via `values/` (English, default/fallback) +
 `values-vi/` + `values-ja/` string resources and an in-app language picker (`LocaleHelper` +
@@ -113,9 +155,13 @@ applies the display filter above. Columns come from the CSV's own row 1 (dynamic
 file — it serializes the exact `DataTable` the grid is bound to, so grid and file never drift. The
 left-bottom CSV list is also filtered by the date picker (by filename date `LogDate`). The toolbar is
 a red **Reset** button (= `ClearAllAsync`), an **Open backup folder** button (`OpenBackupFolder` →
-opens `ICsvBackupWriter.Root` in Explorer), status labels, and the language combo (the old
-Refresh/Export toolbar buttons were removed; the grid auto-refreshes every 2s). Toolbar totals
-("Logs today | Total") count `SUM(CsvUploads.RowCount)` of non-superseded uploads.
+opens `ICsvBackupWriter.Root` in Explorer), status labels (incl. a **MySQL connection-status** label
+driven by `MonitorService.IsDbConnectedAsync`), and the language combo. **Every one of these toolbar
+buttons/labels + both left panels + the master buttons is individually shown/hidden by
+`configuration.xml` (all default hidden)** — see the on-disk-layout section above. The grid
+auto-refreshes every 2s. Toolbar totals ("Logs today | Total") count `SUM(CsvUploads.RowCount)` of
+non-superseded uploads. The window/taskbar **icon is the NEX logo** (`app.ico` next to the exe;
+`ApplicationIcon` in the csproj + `MainForm.TryLoadAppIcon` at runtime — both no-op if the file is absent).
 
 DB tables (relational, MySQL/MariaDB, snake_case names, all survive restart). Every table has a
 numeric surrogate PK (`id BIGINT AUTO_INCREMENT`); FKs reference `id`:
@@ -162,6 +208,17 @@ numeric surrogate PK (`id BIGINT AUTO_INCREMENT`); FKs reference `id`:
      reply (backward-compatible). See `docs/04 §4.1`.
    - `FrameDecoder` strips STX/ETX (per-connection); the CSV type is detected from row 1
      (`CsvTypes.DetectType`) and stored/normalized by `CsvStore`; each client is tagged with its `WorkerId`.
+   - **Master reverse-sync (PC → phone, phone-initiated pull).** The operator edits + saves the 2
+     master CSVs in the dashboard (`MasterStore`, source of truth on PC). The phone tap "receive
+     master" (`btnReceiveMaster`) opens a connection and sends `STX + "MASTER_REQ\n<name>=<pcMtime>\n…" + ETX`
+     where `<pcMtime>` is the **PC-origin** timestamp the phone stored last time (0 if none — a
+     PC-clock value, so phone/PC clock skew can't break the compare); the PC streams back each master
+     whose file mtime now exceeds that stored value (`STX + <name>\t<pcMtime>\r\n + <csv> + ETX`, the
+     phone stores that `<pcMtime>`), then a closing `MASTER_END\n<name>=UPDATED|UPTODATE\n…` frame
+     reporting each file's status; the phone overwrites `<logDir>/master/*.csv`
+     and re-imports into SQLite. The PC is the SPP server and can't dial a roaming phone, so there is
+     **no PC push button** — delivery is always phone-initiated. `BluetoothSppServer.HandleMasterRequestAsync`
+     ↔ `BluetoothSyncManager.requestMaster`. See `docs/04 §4.1`.
    - **Heartbeat (liveness) — PC-only, no longer used.** The PC still routes a frame starting with
      `PING` as a heartbeat and replies `PONG,<radioName>,<epochMillis>` (`ServiceStatus.HeartbeatTimeout`
      = 15 s), but the current `shipment_support` app **does not send PING** — the old 5 s ping /
@@ -175,8 +232,8 @@ numeric surrogate PK (`id BIGINT AUTO_INCREMENT`); FKs reference `id`:
    wire up typed-CSV ingest into `CsvUploads` (via `ICsvStore`) and bind Kestrel on 8080.
 
 **On-disk backup.** After each received CSV is persisted to the DB, `CsvBackupWriter` also writes a
-raw copy to `Sync:BackupFolder/<yyyyMMdd>/<filename>` (default
-`%LOCALAPPDATA%/LeontecSyncLogSystem/backup`; resolved path logged at startup). `<filename>` = the
+raw copy to `Sync:BackupFolder/<yyyyMMdd>/<filename>` (default `<root>/_backup`, i.e.
+`AppPaths.BackupDir`; resolved path logged at startup). `<filename>` = the
 phone's upload name (rebuilt as `{type}_{yyyyMMdd}_{termId}_{index}.txt` if the wire frame had none);
 written atomically (temp + move), UTF-8 no BOM, faithful to the bytes received. **Best-effort** — a
 backup failure is logged (Warning) and swallowed so it never fails ingestion (the row is already in
@@ -191,10 +248,11 @@ the DB). A re-send of the same upload index overwrites idempotently.
 ## Build / run
 
 ```bash
-# One-time (per checkout): fetch the bundled MariaDB (NOT committed to git):
-pwsh scripts/fetch-mariadb.ps1                            # stages LeontecSyncLogSystem/mariadb/
+# MySQL is installed/run SEPARATELY (its own installer / Windows service) — the app does NOT bundle
+# or start a DB. Ensure MySQL is up and mysql.xml points at it (defaults: localhost:3306, db
+# leontec_sync, user root, empty password). The app CREATES the DB + schema via EF migrations at startup.
 dotnet build LeontecSyncLogSystem.slnx -c Release
-dotnet run --project LeontecSyncLogSystem -c Release      # starts embedded DB + host + dashboard
+dotnet run --project LeontecSyncLogSystem -c Release      # starts host + dashboard, connects to MySQL
 # exe: LeontecSyncLogSystem/bin/Release/net10.0-windows10.0.19041.0/LeontecSyncLogSystem.exe
 ```
 
@@ -202,20 +260,22 @@ For Bluetooth to work the phone must be **bonded** to this PC and the app's `pcB
 must match (leniently) the PC's Bluetooth radio name (shown live in the dashboard header).
 Kestrel bind defaults to `http://0.0.0.0:8090` (`appsettings.json` → `Kestrel`); override for
 a test with `Kestrel__Endpoints__Http__Url=http://127.0.0.1:8099 dotnet run ...`.
-Schema is created/updated at startup via **EF Core migrations** (`db.Database.Migrate()`).
+Schema is created/updated at startup via **EF Core migrations** (`db.Database.Migrate()`) — but a DB
+that is **down at startup no longer crashes the app**: the failure is logged and the dashboard opens
+showing "MySQL: disconnected"; migrations/roster load on a later restart once MySQL is up.
 
 ## Conventions / gotchas
 
-- **Database = bundled MariaDB (MySQL-compatible), embedded.** SQLite/SqlServer/Postgres were
+- **Database = EXTERNAL MySQL/MariaDB (installed & run separately).** SQLite/SqlServer/Postgres were
   removed — the app is MySQL-only via **Pomelo.EntityFrameworkCore.MySql** + snake_case naming
-  (`UseSnakeCaseNamingConvention`). By default (`Database:Embedded=true`) the app runs its OWN MariaDB
-  shipped under `<app>/mariadb/` as a child process (`Services/EmbeddedMariaDbServer.cs`) on a private
-  loopback port (`Database:EmbeddedPort`, default **3307**) with data in `%LOCALAPPDATA%/
-  LeontecSyncLogSystem/db-data` — so a target PC needs NO separate MySQL install. First run initializes
-  the data dir (`mariadb-install-db --allow-remote-root-access`); the server is shut down gracefully on
-  exit. Set `Database:Embedded=false` + `ConnectionString` to use an external MySQL/MariaDB instead.
-  The `mariadb/` binaries are **~260 MB and NOT committed** (`.gitignore`) — run
-  `scripts/fetch-mariadb.ps1` to stage them; the csproj copies them next to the exe (PreserveNewest).
+  (`UseSnakeCaseNamingConvention`). The **embedded/bundled MariaDB was removed** (2026-07-09): the app
+  no longer ships or starts a DB. It reads connection settings from **`<root>/mysql.xml`**
+  (`Services/MySqlConfig.cs` → host/port/database/user/password; a missing file is created with
+  defaults `localhost:3306`, db `leontec_sync`, user `root`, empty password) and connects. The DB
+  version is pinned (`new MySqlServerVersion(10.4.0)`) instead of `ServerVersion.AutoDetect` so the
+  DbContext builds offline (AutoDetect would open a connection at config time and throw if MySQL is
+  down). Connection health shows in the toolbar (`MonitorService.IsDbConnectedAsync`). A DB that is
+  down at startup does NOT crash the app (see Build/run).
 - **Schema via EF Core migrations** (`Data/Migrations/`, applied by `db.Database.Migrate()` at
   startup). To change the schema: edit the entities/`AppDbContext`, then
   `dotnet ef migrations add <Name> --project LeontecSyncLogSystem --output-dir Data\Migrations`

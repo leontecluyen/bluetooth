@@ -28,7 +28,8 @@ DataBinding + MVVM thủ công). App **chưa release**.
 ```
 jp/leontec/nittsu/carstock/bluetooth_module/
   BluetoothModule.java       Điểm vào DUY NHẤT: attachSendLogsButton(activity) — nối nút
-                             「④ ログ送信」 (id btnSendLogs trong layout include) → mở LogSendActivity
+                             「④ ログ送信」 (id btnSendLogs trong layout include) → mở LogSendActivity;
+                             + ẩn/hiện nút: isSendLogsVisible/setSendLogsVisible (mặc định ẩn)
   LogSendActivity.java       Màn hình 「ログ送信」 (View thuần, AppCompatActivity): chọn ngày +
                              未送信/送信済 + chọn file + 送信 (5 ca kết quả) + ☰ (PC選択 / リセット)
   BluetoothSyncManager.java  Lõi SPP: bonding, connect (secure→insecure) + retry, sendOneCsv,
@@ -48,6 +49,15 @@ Chuỗi UI dùng `res/values*/strings.xml` của shipment_support (nhóm key `lo
   (đổi giao diện nút thì sửa file include, KHÔNG sửa lại `activity_main.xml`).
 - `MainActivity.java` — đúng **một** dòng `BluetoothModule.attachSendLogsButton(this);` sau
   `setContentView(...)`.
+
+**Ẩn/hiện menu ④ ログ送信 (công tắc trong 設定).** Nút ④ mặc định **ẩn**; operator bật ở màn
+設定 (card "ログ送信メニュー" + `SwitchCompat` `swShowLogSend`). Lựa chọn lưu trong cache bool
+(`Utils.getCacheBool`/`saveCacheBool`, key `BluetoothModule.CACHE_SHOW_SEND_LOGS =
+"show_send_logs_button"`, **mặc định `false` = ẩn**). Toàn bộ logic gói trong `BluetoothModule`:
+`isSendLogsVisible(ctx)` / `setSendLogsVisible(ctx, visible)`; `attachSendLogsButton` đặt
+`btnSendLogs.setVisibility(...)` theo giá trị này ⇒ đổi công tắc có hiệu lực ở lần mở màn hình
+chính kế tiếp. `SettingActivity` chỉ khởi tạo trạng thái công tắc + bấm cả hàng để bật/tắt rồi
+gọi `setSendLogsVisible`; MainActivity không cần sửa thêm.
 
 ## 3.3. Nguồn dữ liệu gửi — `DayLogRepository`
 
@@ -141,10 +151,27 @@ UUID SPP `00001101-0000-1000-8000-00805F9B34FB`; đóng khung `STX(0x02) + body 
 > mới **bỏ hoàn toàn** heartbeat (không có hàm nào gửi PING). PC vẫn còn code trả `PONG` để tương
 > thích ngược, nhưng không thiết bị nào gọi nữa — xem [04 §4.1](04-giao-thuc-va-luong-du-lieu.md).
 
+### Nhận master (PC → 端末) — `requestMaster`
+
+- **`requestMaster(masterDir, knownTimestamps, name, addr) : MasterResult`** — kéo master mới từ PC.
+  Mở MỘT kết nối, gửi `MASTER_REQ\ncustomer_master.csv=<pcMtime>\nitem_master.csv=<pcMtime>` với
+  `<pcMtime>` = **mốc do PC phát mà app đã lưu** (`knownTimestamps`, từ `BtSyncConfig.getMasterTimestamp`,
+  0 nếu chưa có). Đọc các frame PC trả (file `<tên>\t<pcMtime>\r\n<csv>`) tới khi gặp
+  **`MASTER_END\n<tên>=UPDATED|UPTODATE…`** (timeout 20s), **ghi đè** `<logDir>/master/<tên>.csv` (UTF-8),
+  trả `MasterResult{outcome, received, status, receivedTimestamps, completed}`.
+- **Chống lệch đồng hồ:** app KHÔNG dùng `File.lastModified` của chính nó (máy handheld có thể chạy
+  nhanh/chậm hơn PC → so sai). Thay vào đó lưu **mốc do PC cấp** (`receivedTimestamps` → lưu qua
+  `BtSyncConfig.setMasterTimestamp` chỉ khi import OK) rồi gửi ngược lên; PC so trong cùng hệ đồng hồ
+  của nó. Xem [04 §4.1](04-giao-thuc-va-luong-du-lieu.md).
+- **Thông báo** (`receiveMaster`): `outcome != SUCCESS` → thông báo chuẩn (`messageFor`); `!completed`
+  (không có `MASTER_END`) → *PC không phản hồi*; import lỗi/thiếu → *lỗi*; `updatedCount()==0` → *đã
+  mới nhất*; ngược lại → *đã cập nhật N file*.
+
 ## 3.7. Màn hình 「ログ送信」 — `LogSendActivity`
 
-`AppCompatActivity` (View thuần, KHÔNG Compose), fullscreen. `attachBaseContext` bọc Context qua
-`LocaleHelper.onAttach` (theo ngôn ngữ đã chọn của shipment_support).
+`AppCompatActivity` (View thuần, KHÔNG Compose), fullscreen. `attachBaseContext` áp ngôn ngữ đã chọn
+qua `LocaleHelper.buildOverrideConfig` + `applyOverrideConfiguration` (KHÔNG dùng
+`createConfigurationContext` — nếu không sẽ vỡ `PrintManager.print`, xem shipment_support/CLAUDE.md §i18n).
 
 - **送信日** (ngày gửi): 2 nút ◀/▶ đổi ngày, mặc định **hôm nay**, **chặn ngày tương lai** (▶
   disable khi đang ở hôm nay). So sánh ngày = so sánh chuỗi `yyyyMMdd`.
@@ -162,6 +189,9 @@ UUID SPP `00001101-0000-1000-8000-00805F9B34FB`; đóng khung `STX(0x02) + body 
   / `PC とペアリング…` / `PC への接続に失敗…` / `ファイル送信に失敗…` / `送信が完了しました。`.
   Outcome hiển thị = **`BatchResult.outcome`** (SUCCESS nếu PC xác nhận OK đủ số file, ngược lại
   SEND_FAILED / lỗi kết nối / chưa pair / BT off).
+- **マスタ受信** (`btnReceiveMaster` → `receiveMaster`): kéo master mới từ PC (`requestMaster`) rồi
+  re-import từng file nhận được vào SQLite (`importCustomerCsvFromDisk`/`importItemCsvFromDisk`).
+  Toast: cập nhật N file / đã mới nhất / lỗi. Chạy trên thread nền (`io`).
 - **Menu ☰** (`PopupMenu`): **PC選択** (dialog danh sách bonded, đánh dấu ✓ PC hiện tại),
   **リセット** (`unpairAll` + `BtSyncConfig.resetAll` + `clearAllBackup`, có hộp xác nhận).
 - **Quyền:** xin `BLUETOOTH_CONNECT` ngay khi vào màn (chỉ API ≥ 31, qua

@@ -21,7 +21,7 @@ Yêu cầu cốt lõi:
 | Thành phần | Thư mục | Vai trò | Công nghệ chính |
 |-----------|---------|---------|-----------------|
 | **Ứng dụng Android** | `shipment_support/` | Quét mã vạch, ghi log ra file, gửi sang PC (module `bluetooth_module`) | Java, Android View, SQLite, Bluetooth Classic SPP |
-| **Ứng dụng PC** | `LeontecSyncLogSystem/` | Nhận log, lưu DB, hiển thị dashboard | C# .NET 10, WinForms, ASP.NET Core (Kestrel), EF Core, MariaDB nhúng, 32feet.NET |
+| **Ứng dụng PC** | `LeontecSyncLogSystem/` | Nhận log, lưu DB, hiển thị dashboard | C# .NET 10, WinForms, ASP.NET Core (Kestrel), EF Core, MySQL ngoài (Pomelo), 32feet.NET |
 
 Android đóng vai **client Bluetooth**; PC đóng vai **server Bluetooth SPP**. Đây là điểm
 mấu chốt từng gây nhầm lẫn: trước đây tưởng dùng cổng COM nên không bao giờ thấy COM hiện ra.
@@ -110,9 +110,10 @@ Android  ──► POST JSON (mảng JobLog, Gson) ──► http://<ip>:8080/ap
    có **thử lại + jitter** (`connectWithRetry`) để nhiều máy gửi cùng lúc không kẹt kết nối
    BR/EDR; file gửi lỗi được giữ lại (không MOVE sang backup) để gửi lại sau.
 
-5. **DB nhúng, tự chứa (embedded).** App đóng gói sẵn **MariaDB** (`<app>/mariadb/`) và chạy nó như
-   tiến trình con (port 3307 loopback, data ở `%LOCALAPPDATA%`), nên copy app sang máy khác là chạy
-   được ngay — không cần cài MySQL. Chỉ hỗ trợ MySQL/MariaDB (qua Pomelo); schema qua EF Core migrations.
+5. **DB = MySQL ngoài (cài/chạy riêng).** MySQL/MariaDB được cài & chạy bằng bộ cài / Windows service
+   riêng; app **không đóng gói/khởi động DB** (MariaDB nhúng đã gỡ bỏ 2026-07-09). App đọc `mysql.xml`
+   (thư mục cha của `app/`) để kết nối và hiện trạng thái; DB tắt lúc khởi động không làm app crash.
+   Chỉ hỗ trợ MySQL/MariaDB (qua Pomelo); schema qua EF Core migrations tạo lúc khởi động.
 
 ## 1.6. Đọc tiếp
 

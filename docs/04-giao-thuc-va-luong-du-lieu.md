@@ -82,6 +82,47 @@ PC → client :  STX  PONG,<radioName>,<epochMillis>   ETX
   Do không còn liên lạc heartbeat, trạng thái Online của PC chỉ dựa vào lúc thực sự có kết nối
   gửi file.
 
+### Đồng bộ ngược master (`MASTER_REQ` → file(s) → `MASTER_END`)
+
+Chiều **PC → điện thoại**: đẩy 2 file master (`customer_master.csv`, `item_master.csv`) từ PC về
+app để **sửa master trên PC là đồng bộ được, khỏi cài lại app**. PC là **source of truth**; sửa +
+lưu master trong dashboard PC → app kéo về khi người dùng bấm **「マスタ受信」**.
+
+Vì PC là SPP **server** còn điện thoại là **client** (điện thoại đi quét ra/vào vùng BT liên tục),
+**PC không tự mở kết nối** — luồng luôn do **điện thoại khởi tạo** (pull theo yêu cầu). Trên kết nối
+điện thoại mở:
+
+```
+Android → PC :  STX  MASTER_REQ\ncustomer_master.csv=<pcMtime>\nitem_master.csv=<pcMtime>   ETX
+PC → Android :  STX  customer_master.csv\t<pcMtime>\r\n<csv>                     ETX   (chỉ khi PC mới hơn)
+PC → Android :  STX  item_master.csv\t<pcMtime>\r\n<csv>                         ETX   (chỉ khi PC mới hơn)
+PC → Android :  STX  MASTER_END\ncustomer_master.csv=UPDATED\nitem_master.csv=UPTODATE   ETX
+```
+
+- **Mốc do PC phát (chống lệch đồng hồ 2 máy).** `<pcMtime>` trong `MASTER_REQ` = mốc app **đã lưu**
+  lần trước cho từng file (giá trị này DO PC cấp, lưu trong SharedPreferences `bt_module_config`, key
+  `master_ts_<tên>`; `0` nếu chưa từng nhận). PC so **mtime hiện tại của file trên PC** với mốc app
+  gửi lên — **cả 2 vế đều là mốc theo đồng hồ PC** nên không bị lệch giờ điện thoại/PC.
+  (Trước đây so trực tiếp `File.lastModified` của máy app → sai khi máy app chạy nhanh hơn PC.)
+- Nếu **mtime PC > `<pcMtime>` app gửi** (hoặc app = 0) → PC gửi file, **kèm mtime hiện tại của PC ở
+  dòng 1** (`<tên>\t<pcMtime>`). App ghi file rồi **lưu `<pcMtime>` đó** để gửi ngược lần sau.
+- **Khung kết `MASTER_END` mang trạng thái TỪNG file** — `UPDATED` (đã gửi) / `UPTODATE` (app đã mới
+  nhất) — để app hiển thị thông báo chính xác: *cập nhật N file* / *đã mới nhất* / *lỗi* (PC báo
+  UPDATED nhưng app ghi/nhập DB thất bại) / *PC không phản hồi* (không nhận được `MASTER_END`).
+- App nhận từng frame tới khi gặp `MASTER_END` (timeout **20s**), ghi đè `<logDir>/master/<tên>.csv`
+  (UTF-8), **re-import vào SQLite** (`importCustomerCsvFromDisk`/`importItemCsvFromDisk` — dùng chung
+  với 設定 import từ đĩa), rồi **lưu `<pcMtime>`** (chỉ khi import OK; import lỗi thì giữ mốc cũ để lần
+  sau thử lại).
+- **Header phải giữ nguyên**: `item_master` phía Android validate header **bắt đầu bằng**
+  `品目コード,品目名称,箱種` → PC phải giữ đúng header (`MasterStore.Header`).
+- Encoding: cả 2 phía dùng **UTF-8 không BOM** (khớp asset app) → stream nguyên byte.
+
+> Code: PC `Services/MasterStore.cs` (`Load`/`Save`/`LastModifiedUnixMillis`),
+> `Services/BluetoothSppServer.cs` (`IsMasterRequest`/`HandleMasterRequestAsync`/`ParseMasterRequest`/
+> `SendTextFrameAsync`). Android `bluetooth_module/BluetoothSyncManager.java`
+> (`requestMaster`/`writeMasterFile`/`fileMillis`), `bluetooth_module/LogSendActivity.java`
+> (`receiveMaster`, nút `btnReceiveMaster`).
+
 ## 4.1b. Tên file (envelope: type / NGÀY / term_id / index)
 
 Dòng **ĐẦU TIÊN** trong khung (trước CSV) là **tên file**, mang metadata của lần gửi —

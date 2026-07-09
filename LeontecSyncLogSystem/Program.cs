@@ -2,6 +2,7 @@ using System.IO;
 using LeontecSyncLogSystem.Data;
 using LeontecSyncLogSystem.Monitoring;
 using LeontecSyncLogSystem.Services;
+using LeontecSyncLogSystem.UI;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -32,63 +33,65 @@ namespace LeontecSyncLogSystem
 
             // --- Options ------------------------------------------------------------
             builder.Services.Configure<SyncOptions>(builder.Configuration.GetSection(SyncOptions.SectionName));
-            builder.Services.Configure<DatabaseOptions>(builder.Configuration.GetSection(DatabaseOptions.SectionName));
-            var dbOptions = builder.Configuration.GetSection(DatabaseOptions.SectionName).Get<DatabaseOptions>()
-                            ?? new DatabaseOptions();
 
-            // --- Embedded MariaDB (bundled, self-contained) --------------------------
-            // When enabled (default), start our own MariaDB shipped under <app>/mariadb/ so the app
-            // needs no separate MySQL install. Must be up BEFORE the DbContext connects/migrates.
-            EmbeddedMariaDbServer? embeddedDb = null;
-            string connectionString = dbOptions.ConnectionString;
-            if (dbOptions.Embedded)
-            {
-                var mariadbBase = Path.Combine(AppContext.BaseDirectory, "mariadb");
-                var dataDir = string.IsNullOrWhiteSpace(dbOptions.DataDir)
-                    ? Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                        "LeontecSyncLogSystem", "db-data")
-                    : dbOptions.DataDir;
+            using var boot = LoggerFactory.Create(b => b.AddConsole());
 
-                using var boot = LoggerFactory.Create(b => b.AddConsole());
-                embeddedDb = new EmbeddedMariaDbServer(
-                    mariadbBase, dataDir, dbOptions.EmbeddedPort, boot.CreateLogger("EmbeddedMariaDB"));
-                embeddedDb.Start();                       // blocks until the server accepts connections
-                connectionString = embeddedDb.ConnectionString;
-                builder.Services.AddSingleton(embeddedDb); // keep alive; disposed on shutdown
-            }
-
-            // --- Database (MySQL/MariaDB via Pomelo) ---------------------------------
+            // --- Database (EXTERNAL MySQL, connection settings from mysql.xml) -------
+            // The MySQL server is installed and run SEPARATELY (its own installer / Windows service);
+            // this app no longer bundles or starts a DB. It reads <root>/mysql.xml, connects, and later
+            // reports connection health in the toolbar. A missing mysql.xml is created with defaults.
+            var mySql = MySqlConfig.LoadOrCreate(AppPaths.MySqlConfigPath, boot.CreateLogger("MySqlConfig"));
+            builder.Services.AddSingleton(mySql);
+            var connectionString = mySql.BuildConnectionString();
             builder.Services.AddDbContext<AppDbContext>(options =>
             {
-                options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString))
+                // Pin the server version instead of AutoDetect(): AutoDetect opens a connection at
+                // configuration time, which would throw here if MySQL is momentarily down and stop the
+                // whole app from starting. A fixed version lets the context build offline; the actual
+                // connection (and its failure, if any) is handled where we query. Keep this in sync
+                // with Data/DesignTimeDbContextFactory.cs (8.0.36) so design-time and runtime emit the
+                // same MySQL dialect — the DB is an external MySQL install.
+                options.UseMySql(connectionString, new MySqlServerVersion(new Version(8, 0, 36)))
                     .UseSnakeCaseNamingConvention();
             });
+
+            // --- UI show/hide toggles (configuration.xml, all default false = hidden) ---
+            var uiConfig = UiConfig.LoadOrCreate(AppPaths.AppConfigPath, boot.CreateLogger("UiConfig"));
+            builder.Services.AddSingleton(uiConfig);
 
             // --- Application services ------------------------------------------------
             builder.Services.AddSingleton<ServiceStatus>();
             builder.Services.AddSingleton<IDeviceStore, DeviceStore>();
             builder.Services.AddSingleton<ICsvStore, CsvStore>();
 
-            // On-disk backup of every received CSV. Default folder = %LOCALAPPDATA%/LeontecSyncLogSystem/backup.
+            // On-disk backup of every received CSV. Folder = <root>/_backup (sibling of the app
+            // folder), unless Sync:BackupFolder overrides it with an absolute path.
             var syncOptions = builder.Configuration.GetSection(SyncOptions.SectionName).Get<SyncOptions>()
                               ?? new SyncOptions();
             var backupRoot = string.IsNullOrWhiteSpace(syncOptions.BackupFolder)
-                ? Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "LeontecSyncLogSystem", "backup")
+                ? AppPaths.BackupDir
                 : syncOptions.BackupFolder;
             builder.Services.AddSingleton<ICsvBackupWriter>(sp =>
                 new CsvBackupWriter(backupRoot, sp.GetRequiredService<ILogger<CsvBackupWriter>>()));
 
-            // Editable master files (customer + item), source-of-truth on the PC. Default folder =
-            // %LOCALAPPDATA%/LeontecSyncLogSystem/master; seeded from the bundled copy next to the exe.
-            var masterRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "LeontecSyncLogSystem", "master");
+            // Editable master files (customer + item), source-of-truth on the PC. Folder =
+            // <root>/_master (sibling of the app folder); seeded from the bundled copy next to the exe.
+            var masterRoot = AppPaths.MasterDir;
             var masterSeedRoot = Path.Combine(AppContext.BaseDirectory, "master-seed");
             builder.Services.AddSingleton<IMasterStore>(sp =>
                 new MasterStore(masterRoot, masterSeedRoot, sp.GetRequiredService<ILogger<MasterStore>>()));
+
+            // The Bluetooth SPP server is a singleton so BOTH the Worker (which runs its accept loop)
+            // and the dashboard (which pushes master files via the "Sync master" button) share one
+            // instance and its live-connection registry.
+            builder.Services.AddSingleton<BluetoothSppServer>(sp => new BluetoothSppServer(
+                sp.GetRequiredService<ServiceStatus>(),
+                sp.GetRequiredService<ICsvStore>(),
+                sp.GetRequiredService<IDeviceStore>(),
+                sp.GetRequiredService<ICsvBackupWriter>(),
+                sp.GetRequiredService<IMasterStore>(),
+                syncOptions.BluetoothServiceName,
+                sp.GetRequiredService<ILoggerFactory>().CreateLogger<BluetoothSppServer>()));
 
             builder.Services.AddSingleton<MonitorService>();
             builder.Services.AddHostedService<Worker>();
@@ -100,23 +103,35 @@ namespace LeontecSyncLogSystem
                 .LogInformation("CSV backup folder: {Root} (per-day subfolders, one file per upload).", backupRoot);
 
             // --- Apply EF Core migrations + load the persisted device roster ---------
+            // MySQL is now EXTERNAL, so it may be down when the app starts. We must NOT crash in that
+            // case — the dashboard still opens and shows "MySQL: disconnected". Ingest/queries fail
+            // per-operation and are logged; once MySQL comes up, migrations run on the next restart.
             using (var scope = app.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                // Migrations are the single source of truth for the MySQL schema (no more
-                // hand-written CREATE TABLE / ALTER TABLE). Creates the DB if it doesn't exist
-                // and applies any pending migrations.
-                db.Database.Migrate();
+                var startupLog = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+                try
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    // Migrations are the single source of truth for the MySQL schema (no more
+                    // hand-written CREATE TABLE / ALTER TABLE). Creates the DB if it doesn't exist
+                    // and applies any pending migrations.
+                    db.Database.Migrate();
 
-                // Seed the in-memory roster so previously seen devices reappear (offline).
-                var status = scope.ServiceProvider.GetRequiredService<ServiceStatus>();
-                var deviceStore = scope.ServiceProvider.GetRequiredService<IDeviceStore>();
-                var saved = deviceStore.LoadAllAsync().GetAwaiter().GetResult();
-                status.SeedFromPersisted(saved);
+                    // Seed the in-memory roster so previously seen devices reappear (offline).
+                    var status = scope.ServiceProvider.GetRequiredService<ServiceStatus>();
+                    var deviceStore = scope.ServiceProvider.GetRequiredService<IDeviceStore>();
+                    var saved = deviceStore.LoadAllAsync().GetAwaiter().GetResult();
+                    status.SeedFromPersisted(saved);
 
-                scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
-                    .CreateLogger("Startup")
-                    .LogInformation("Loaded {Count} persisted device(s) from DB.", saved.Count);
+                    startupLog.LogInformation("Loaded {Count} persisted device(s) from DB.", saved.Count);
+                }
+                catch (Exception ex)
+                {
+                    startupLog.LogError(ex,
+                        "Database not ready at startup ({Endpoint}). The app will start anyway and show " +
+                        "'MySQL: disconnected'; migrations/roster will load on a later restart once MySQL is up.",
+                        mySql.Endpoint);
+                }
             }
 
             // --- HTTP API ------------------------------------------------------------
@@ -148,7 +163,9 @@ namespace LeontecSyncLogSystem
                 Application.Run(new MainForm(
                     app.Services.GetRequiredService<MonitorService>(),
                     app.Services.GetRequiredService<ICsvBackupWriter>(),
-                    app.Services.GetRequiredService<IMasterStore>()));
+                    app.Services.GetRequiredService<IMasterStore>(),
+                    app.Services.GetRequiredService<UiConfig>(),
+                    app.Services.GetRequiredService<MySqlConfig>()));
             }
             catch (Exception ex)
             {
@@ -168,10 +185,6 @@ namespace LeontecSyncLogSystem
                     // Best-effort: log and continue to the hard exit below so the process still dies.
                     Console.Error.WriteLine($"Host shutdown error (ignored): {ex.Message}");
                 }
-
-                // Stop the bundled MariaDB last (after the host released its DB connections).
-                try { embeddedDb?.Dispose(); }
-                catch (Exception ex) { Console.Error.WriteLine($"Embedded DB shutdown error (ignored): {ex.Message}"); }
             }
 
             // Guarantee the process actually terminates and releases LeontecSyncLogSystem.exe. If a
@@ -190,12 +203,9 @@ namespace LeontecSyncLogSystem
             var message = ex?.ToString() ?? "(unknown error)";
             try
             {
-                var dir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "LeontecSyncLogSystem");
-                Directory.CreateDirectory(dir);
+                // crash.log lives inside the app folder (next to the exe), not %LOCALAPPDATA%.
                 var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {source} unhandled exception:{Environment.NewLine}{message}{Environment.NewLine}{Environment.NewLine}";
-                File.AppendAllText(Path.Combine(dir, "crash.log"), line);
+                File.AppendAllText(AppPaths.AppDataFile("crash.log"), line);
             }
             catch { /* logging must never throw from the crash handler */ }
 
