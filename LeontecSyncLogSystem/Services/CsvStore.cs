@@ -5,16 +5,34 @@ using Microsoft.EntityFrameworkCore;
 namespace LeontecSyncLogSystem.Services
 {
     /// <summary>
-    /// Persists received CSV uploads (one row per Bluetooth sync), linked to the sending device,
-    /// and normalizes their rows into per-type tables (MonitorEntries / PalletOps + PalletOpItems).
-    /// Keeps the raw CSV so the dashboard can show columns exactly as the file's row-1 header.
-    /// Newer index of the same (TermId, Type) marks older uploads as <c>Superseded</c>.
+    /// Lightweight, read-only view of a persisted CSV upload for the dashboard list. Carries the
+    /// sending device's <see cref="Address"/> (resolved via a join on <c>DeviceId</c>) so the UI can
+    /// filter by device without loading the heavy <c>RawCsv</c>.
+    /// </summary>
+    public sealed record CsvUploadInfo(
+        long Id,
+        string Address,
+        DateTime ReceivedAtUtc,
+        string Source,
+        string Type,
+        string TermId,
+        int UploadIndex,
+        DateTime? LogDate,
+        bool Superseded,
+        int RowCount);
+
+    /// <summary>
+    /// Persists received CSV uploads (one row per Bluetooth sync), linked to the sending device by
+    /// <c>DeviceId</c>, and normalizes their rows into per-type tables (MonitorEntries / PalletOps +
+    /// PalletOpItems / DirectEntries). Keeps the raw CSV so the dashboard can show columns exactly as
+    /// the file's row-1 header. A newer index of the same (TermId, Type) marks older uploads
+    /// <c>Superseded</c>; the SAME index replaces the prior upload.
     /// </summary>
     public interface ICsvStore
     {
         Task SaveAsync(CsvUpload upload, CancellationToken token = default);
-        Task<IReadOnlyList<CsvUpload>> GetByDeviceAsync(string? address, CancellationToken token = default);
-        Task<string?> GetRawCsvAsync(Guid uploadId, CancellationToken token = default);
+        Task<IReadOnlyList<CsvUploadInfo>> GetByDeviceAsync(string? address, CancellationToken token = default);
+        Task<string?> GetRawCsvAsync(long uploadId, CancellationToken token = default);
         /// <summary>
         /// Raw CSV text of every upload of <paramref name="typeKey"/> whose log day equals
         /// <paramref name="date"/> (by <c>LogDate</c>, or by the local received date when an older
@@ -44,9 +62,25 @@ namespace LeontecSyncLogSystem.Services
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                db.CsvUploads.Add(upload);
+                // Resolve the sending device (its row is upserted just before this call) to its
+                // surrogate key. Without a device we cannot satisfy the FK, so skip (best-effort).
+                var deviceId = await db.Devices.AsNoTracking()
+                    .Where(d => d.Address == upload.DeviceAddress)
+                    .Select(d => (long?)d.Id)
+                    .FirstOrDefaultAsync(token);
+                if (deviceId is null)
+                {
+                    _logger.LogWarning(
+                        "No device row for {Addr}; skipping CSV persist.", upload.DeviceAddress);
+                    return;
+                }
+                upload.DeviceId = deviceId.Value;
 
-                // Normalize rows into typed tables according to the detected type.
+                // Phase 1: insert the upload so its auto-increment Id is assigned.
+                db.CsvUploads.Add(upload);
+                await db.SaveChangesAsync(token);
+
+                // Phase 2: normalize rows into typed tables, keyed on the now-known upload.Id.
                 var type = CsvTypes.FromKey(upload.Type);
                 if (type == CsvType.MonitorLog)
                 {
@@ -72,7 +106,6 @@ namespace LeontecSyncLogSystem.Services
                         db.DirectEntries.Add(e);
                     }
                 }
-
                 await db.SaveChangesAsync(token);
 
                 if (!string.IsNullOrEmpty(upload.TermId) && type != CsvType.Unknown && upload.UploadIndex > 0)
@@ -102,40 +135,26 @@ namespace LeontecSyncLogSystem.Services
             }
         }
 
-        public async Task<IReadOnlyList<CsvUpload>> GetByDeviceAsync(string? address, CancellationToken token = default)
+        public async Task<IReadOnlyList<CsvUploadInfo>> GetByDeviceAsync(string? address, CancellationToken token = default)
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-            var query = db.CsvUploads.AsNoTracking();
-            if (!string.IsNullOrEmpty(address))
-                query = query.Where(u => u.DeviceAddress == address);
+            // Join Devices to carry the MAC address (used by the UI to filter by device) and,
+            // when requested, to filter the list to one device.
+            var query =
+                from u in db.CsvUploads.AsNoTracking()
+                join d in db.Devices.AsNoTracking() on u.DeviceId equals d.Id
+                where address == null || address == "" || d.Address == address
+                orderby u.ReceivedAtUtc descending
+                select new CsvUploadInfo(
+                    u.Id, d.Address, u.ReceivedAtUtc, u.Source, u.Type,
+                    u.TermId, u.UploadIndex, u.LogDate, u.Superseded, u.RowCount);
 
-            // Metadata only (no RawCsv) so the list stays light.
-            return await query
-                .OrderByDescending(u => u.ReceivedAtUtc)
-                .Take(MaxList)
-                .Select(u => new CsvUpload
-                {
-                    Id = u.Id,
-                    DeviceAddress = u.DeviceAddress,
-                    ReceivedAtUtc = u.ReceivedAtUtc,
-                    Source = u.Source,
-                    Device = u.Device,
-                    WorkerId = u.WorkerId,
-                    Type = u.Type,
-                    TermId = u.TermId,
-                    UploadIndex = u.UploadIndex,
-                    LogDate = u.LogDate,
-                    Superseded = u.Superseded,
-                    RowCount = u.RowCount,
-                    Inserted = u.Inserted,
-                    Duplicates = u.Duplicates,
-                })
-                .ToListAsync(token);
+            return await query.Take(MaxList).ToListAsync(token);
         }
 
-        public async Task<string?> GetRawCsvAsync(Guid uploadId, CancellationToken token = default)
+        public async Task<string?> GetRawCsvAsync(long uploadId, CancellationToken token = default)
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();

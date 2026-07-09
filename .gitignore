@@ -6,6 +6,10 @@ synclogs.db-wal
 *.db-shm
 *.db-wal
 
+# ---- Bundled MariaDB server (large; fetched via scripts/fetch-mariadb.ps1) + its data ----
+LeontecSyncLogSystem/mariadb/
+db-data/
+
 # ---- .NET / Visual Studio ----
 [Bb]in/
 [Oo]bj/

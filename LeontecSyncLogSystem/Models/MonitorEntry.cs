@@ -10,10 +10,10 @@ namespace LeontecSyncLogSystem.Models
     public class MonitorEntry
     {
         public long Id { get; set; }
-        public Guid UploadId { get; set; }
+        public long UploadId { get; set; }
 
-        public string StartTime { get; set; } = "";    // 開始時刻 (HH:mm:ss)
-        public string EndTime { get; set; } = "";       // 終了時刻
+        public TimeOnly? StartTime { get; set; }         // 開始時刻 (time of day; null if blank/invalid)
+        public TimeOnly? EndTime { get; set; }           // 終了時刻
         public string SlipNo { get; set; } = "";         // 入出庫伝票番号
         public string CustomerCode { get; set; } = "";   // 顧客コード
         public string ItemCode { get; set; } = "";       // 品目コード

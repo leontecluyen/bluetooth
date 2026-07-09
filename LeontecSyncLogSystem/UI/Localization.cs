@@ -6,7 +6,6 @@ namespace LeontecSyncLogSystem.UI
     public enum AppLang
     {
         En,
-        Vi,
         Ja,
     }
 
@@ -15,7 +14,7 @@ namespace LeontecSyncLogSystem.UI
     /// dictionaries keyed by a stable code; <see cref="T(string)"/> returns the current language's
     /// text (falling back to the key itself if a translation is missing). The chosen language is
     /// persisted (see <see cref="LanguageStore"/>); on first run it is derived from the OS UI
-    /// culture (vi/ja → that language, anything else → English).
+    /// culture (ja → Japanese, anything else → English).
     ///
     /// Call <see cref="SetLanguage"/> to switch at runtime; subscribers to <see cref="Changed"/>
     /// (the dashboard) re-apply all visible texts without a restart.
@@ -54,14 +53,12 @@ namespace LeontecSyncLogSystem.UI
         private static AppLang DetectSystemLanguage() =>
             CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.ToLowerInvariant() switch
             {
-                "vi" => AppLang.Vi,
                 "ja" => AppLang.Ja,
                 _ => AppLang.En,
             };
 
         private static Dictionary<string, string> MapFor(AppLang lang) => lang switch
         {
-            AppLang.Vi => Vi,
             AppLang.Ja => Ja,
             _ => En,
         };
@@ -72,6 +69,8 @@ namespace LeontecSyncLogSystem.UI
             ["btn_refresh"] = "Refresh",
             ["btn_clear"] = "Reset",
             ["btn_export"] = "Export CSV",
+            ["btn_open_backup"] = "Open backup folder",
+            ["backup_open_error"] = "Cannot open the backup folder: {0}",
             ["conn_starting"] = "● Starting…",
             ["conn_running"] = "● RUNNING",
             ["conn_error"] = "● ERROR ({0})",
@@ -120,62 +119,29 @@ namespace LeontecSyncLogSystem.UI
             ["export_empty"] = "Nothing to export (no rows shown).",
             ["export_error"] = "Export failed: {0}",
             ["menu_language"] = "Language",
-        };
 
-        // ---------------- Tiếng Việt ----------------
-        private static readonly Dictionary<string, string> Vi = new()
-        {
-            ["btn_refresh"] = "Làm mới",
-            ["btn_clear"] = "Reset",
-            ["btn_export"] = "Xuất CSV",
-            ["conn_starting"] = "● Đang khởi động…",
-            ["conn_running"] = "● ĐANG CHẠY",
-            ["conn_error"] = "● LỖI ({0})",
-            ["uptime"] = "Uptime: {0}",
-            ["totals"] = "Log hôm nay: {0}   |   Tổng: {1}",
-            ["bt_listening"] = "● Bluetooth SPP: ĐANG LẮNG NGHE  —  tên PC để ghép đôi: \"{0}\"",
-            ["bt_not_listening"] = "× Bluetooth SPP: CHƯA LẮNG NGHE  —  {0}",
-            ["unknown"] = "(không rõ)",
-            ["bt_initializing"] = "đang khởi động / kiểm tra adapter Bluetooth",
-            ["grp_clients"] = "Thiết bị Bluetooth (mỗi máy = 1 kết nối SPP)",
-            ["grp_csv"] = "CSV đã nhận",
-            ["grp_daylog"] = "Log trong ngày",
-            ["col_name"] = "Tên máy",
-            ["col_device"] = "Thiết bị",
-            ["col_presence"] = "Hiện diện",
-            ["col_frames"] = "Gói",
-            ["col_records"] = "Bản ghi",
-            ["col_last_hb"] = "Nhịp cuối",
-            ["col_last_data"] = "Data cuối",
-            ["col_time"] = "Thời gian",
-            ["col_type"] = "Loại",
-            ["col_index"] = "Lần",
-            ["col_rows"] = "Dòng",
-            ["online"] = "● Online",
-            ["offline"] = "○ Offline",
-            ["clear_confirm_body"] =
-                "Xoá TOÀN BỘ log trong cơ sở dữ liệu, danh sách CSV đã nhận và danh sách thiết bị?\n" +
-                "Dùng để test lại từ đầu. Hành động này không hoàn tác được.\n" +
-                "(Lưu ý: không huỷ ghép đôi Bluetooth ở Windows — chỉ xoá dữ liệu/trạng thái trong app.)",
-            ["clear_confirm_title"] = "Xác nhận xoá toàn bộ DB",
-            ["clear_done"] = "Đã xoá {0} dòng log và toàn bộ danh sách CSV.",
-            ["done"] = "Hoàn tất",
-            ["clear_error"] = "Lỗi khi xoá DB: {0}",
-            ["error"] = "Lỗi",
-            ["type_monitor"] = "Monitor (入出庫)",
-            ["type_pallet"] = "Pallet (パレット)",
-            ["type_direct"] = "Direct (直送)",
-            ["type_legacy"] = "Legacy",
-            ["type_other"] = "Khác",
-            ["lbl_date"] = "Ngày dữ liệu:",
-            ["lbl_type"] = "Loại:",
-            ["daylog_header"] = "{0} — {1} — {2} dòng",
-            ["daylog_dups"] = ", {0} dòng trùng",
-            ["err_load_daylog"] = "Lỗi tải log ngày: {0}",
-            ["export_done"] = "Đã xuất {0} dòng ra:\n{1}",
-            ["export_empty"] = "Không có gì để xuất (không có dòng nào).",
-            ["export_error"] = "Xuất CSV lỗi: {0}",
-            ["menu_language"] = "Ngôn ngữ",
+            // Master editing (customer / item master files, editable + pushed to phones).
+            ["btn_master_customer"] = "Customer master",
+            ["btn_master_item"] = "Item master",
+            ["btn_master_sync"] = "Sync master",
+            ["btn_master_add"] = "Add row",
+            ["btn_master_delete"] = "Delete row",
+            ["btn_master_save"] = "Save",
+            ["btn_master_close"] = "Close",
+            ["grp_master"] = "Master",
+            ["master_customer"] = "Customer master",
+            ["master_item"] = "Item master",
+            ["master_load_error"] = "Cannot load the master file: {0}",
+            ["master_saved"] = "Saved {0} — {1} rows.",
+            ["master_save_error"] = "Save failed: {0}",
+            ["master_discard_confirm"] = "Discard unsaved changes to the master?",
+            ["master_sync_save_first"] = "The master has unsaved changes. Save them before syncing?",
+            ["master_sync_armed"] =
+                "Master is ready (version {0}).\n\n" +
+                "The PC cannot push to a phone that isn't connected, so the masters will be delivered " +
+                "to each phone on its NEXT sync (this over-Bluetooth delivery is Giai đoạn 2 — not " +
+                "wired yet).",
+            ["master_sync_error"] = "Sync failed: {0}",
         };
 
         // ---------------- 日本語 ----------------
@@ -184,6 +150,8 @@ namespace LeontecSyncLogSystem.UI
             ["btn_refresh"] = "更新",
             ["btn_clear"] = "リセット",
             ["btn_export"] = "CSV出力",
+            ["btn_open_backup"] = "バックアップフォルダを開く",
+            ["backup_open_error"] = "バックアップフォルダを開けません: {0}",
             ["conn_starting"] = "● 起動中…",
             ["conn_running"] = "● 稼働中",
             ["conn_error"] = "● エラー ({0})",
@@ -232,6 +200,28 @@ namespace LeontecSyncLogSystem.UI
             ["export_empty"] = "エクスポートする行がありません。",
             ["export_error"] = "エクスポート失敗: {0}",
             ["menu_language"] = "言語",
+
+            // マスタ編集（顧客・品目マスタの編集と端末への配信）
+            ["btn_master_customer"] = "顧客マスタ",
+            ["btn_master_item"] = "品目マスタ",
+            ["btn_master_sync"] = "マスタ同期",
+            ["btn_master_add"] = "行追加",
+            ["btn_master_delete"] = "行削除",
+            ["btn_master_save"] = "保存",
+            ["btn_master_close"] = "閉じる",
+            ["grp_master"] = "マスタ",
+            ["master_customer"] = "顧客マスタ",
+            ["master_item"] = "品目マスタ",
+            ["master_load_error"] = "マスタファイルを読み込めません: {0}",
+            ["master_saved"] = "{0} を保存しました — {1} 行。",
+            ["master_save_error"] = "保存に失敗しました: {0}",
+            ["master_discard_confirm"] = "マスタの未保存の変更を破棄しますか？",
+            ["master_sync_save_first"] = "マスタに未保存の変更があります。同期前に保存しますか？",
+            ["master_sync_armed"] =
+                "マスタの準備ができました（バージョン {0}）。\n\n" +
+                "PCは未接続の端末へ送信できないため（PCがSPPサーバー、端末がクライアント）、" +
+                "各端末が次回同期したときにマスタが配信されます（Bluetooth配信は Giai đoạn 2 — 未実装）。",
+            ["master_sync_error"] = "同期に失敗しました: {0}",
         };
     }
 

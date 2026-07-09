@@ -29,19 +29,19 @@ namespace LeontecSyncLogSystem.Monitoring
         }
 
         /// <summary>
-        /// Wipes all logs, CSV uploads and devices from the DB and clears the live client list.
-        /// Destructive — the caller (dashboard) must confirm first. Returns log rows deleted.
+        /// Wipes all CSV uploads and devices from the DB and clears the live client list.
+        /// Destructive — the caller (dashboard) must confirm first. Returns CSV uploads deleted.
+        /// (Deleting an upload cascades to its normalized MonitorEntries/PalletOps/DirectEntries.)
         /// </summary>
         public async Task<int> ClearAllAsync(CancellationToken token = default)
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            int deleted = await db.Logs.ExecuteDeleteAsync(token);
-            await db.CsvUploads.ExecuteDeleteAsync(token);
+            int deleted = await db.CsvUploads.ExecuteDeleteAsync(token);
             await db.Devices.ExecuteDeleteAsync(token);
             _status.ClearClients();
             _logger.LogWarning(
-                "CLEAR ALL: deleted {Count} log rows + CSV uploads + Devices; cleared the live client list.", deleted);
+                "CLEAR ALL: deleted {Count} CSV uploads (+ normalized rows) + Devices; cleared the live client list.", deleted);
             return deleted;
         }
 
@@ -84,8 +84,7 @@ namespace LeontecSyncLogSystem.Monitoring
                 }).ToList(),
                 Logs = new LogsDto
                 {
-                    // Count CSV log rows (the real data) from the current, non-superseded uploads —
-                    // SyncLogs is the legacy table and is empty now, which is why this read 0.
+                    // Count CSV log rows (the real data) from the current, non-superseded uploads.
                     Total = await db.CsvUploads.Where(u => !u.Superseded)
                         .SumAsync(u => (int?)u.RowCount, token) ?? 0,
                     Today = await db.CsvUploads
@@ -107,25 +106,22 @@ namespace LeontecSyncLogSystem.Monitoring
             string? deviceAddress, DateOnly? day = null, CancellationToken token = default)
         {
             var uploads = await _csvStore.GetByDeviceAsync(deviceAddress, token);
+            IEnumerable<CsvUploadInfo> filtered = uploads;
             if (day is DateOnly d)
-                uploads = uploads.Where(u => u.LogDate.HasValue
-                                          && DateOnly.FromDateTime(u.LogDate.Value) == d).ToList();
-            return uploads.Select(u => new ReceivedCsvDto
+                filtered = uploads.Where(u => u.LogDate.HasValue
+                                           && DateOnly.FromDateTime(u.LogDate.Value) == d);
+            return filtered.Select(u => new ReceivedCsvDto
             {
                 Id = u.Id,
                 ReceivedAtUtc = u.ReceivedAtUtc,
                 Source = u.Source,
-                Device = u.Device,
-                Address = u.DeviceAddress,
-                WorkerId = u.WorkerId,
+                Address = u.Address,
                 Type = u.Type,
                 TermId = u.TermId,
                 UploadIndex = u.UploadIndex,
                 LogDate = u.LogDate,
                 Superseded = u.Superseded,
                 RowCount = u.RowCount,
-                Inserted = u.Inserted,
-                Duplicates = u.Duplicates,
             }).ToList();
         }
 
@@ -133,7 +129,7 @@ namespace LeontecSyncLogSystem.Monitoring
         /// The selected CSV rendered as a table — headers from row 1, then data rows — exactly
         /// as received. Type-agnostic so each CSV type shows its own columns.
         /// </summary>
-        public async Task<CsvTableDto> GetCsvTableAsync(Guid uploadId, CancellationToken token = default)
+        public async Task<CsvTableDto> GetCsvTableAsync(long uploadId, CancellationToken token = default)
         {
             var raw = await _csvStore.GetRawCsvAsync(uploadId, token);
             var dto = new CsvTableDto();

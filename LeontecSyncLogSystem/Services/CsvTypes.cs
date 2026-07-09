@@ -13,8 +13,6 @@ namespace LeontecSyncLogSystem.Services
         PalletLog,
         /// <summary>直送管理 direct-delivery log (直送管理単位).</summary>
         DirectLog,
-        /// <summary>Legacy scan format: id,workerId,jobType,barcodeData,startTime,endTime.</summary>
-        Legacy,
     }
 
     /// <summary>
@@ -30,9 +28,9 @@ namespace LeontecSyncLogSystem.Services
     {
         // --- Canonical headers (row 1) per type — keep in sync with the Android writer/docs ---
         // 状態 codes: monitor 0=正常/9=削除; pallet 0=正常/1=移動/9=削除.
-        // monitor (モニタリスト単位, 8 cols): single 状態 = status code.
+        // monitor (モニタリスト単位, 9 cols): 積込箱数 before the trailing 状態 (= status code).
         public const string MonitorHeader =
-            "開始時刻,終了時刻,入出庫伝票番号,顧客コード,品目コード,箱数,数量,状態";
+            "開始時刻,終了時刻,入出庫伝票番号,顧客コード,品目コード,箱数,数量,積込箱数,状態";
         // pallet (パレット単位, 7 cols): 品目明細 = space-separated 品目コード:箱数x数量; trailing 状態 code.
         public const string PalletHeader =
             "開始時刻,終了時刻,PLNo.,顧客,納入便,品目明細 (品目コード:箱数x数量),状態";
@@ -45,7 +43,6 @@ namespace LeontecSyncLogSystem.Services
             CsvType.MonitorLog => "monitor_log",
             CsvType.PalletLog => "pallet_log",
             CsvType.DirectLog => "direct_log",
-            CsvType.Legacy => "legacy",
             _ => "unknown",
         };
 
@@ -54,7 +51,6 @@ namespace LeontecSyncLogSystem.Services
             "monitor_log" or "monitor" => CsvType.MonitorLog,
             "pallet_log" or "pallet" => CsvType.PalletLog,
             "direct_log" or "direct" => CsvType.DirectLog,
-            "legacy" => CsvType.Legacy,
             _ => CsvType.Unknown,
         };
 
@@ -69,9 +65,6 @@ namespace LeontecSyncLogSystem.Services
             if (h.Contains("納入先") || h.Contains("工場コード") || h.Contains("ヨコオ品番")) return CsvType.DirectLog;
             if (h.Contains("PLNo.") || h.Contains("品目明細")) return CsvType.PalletLog;
             if (h.Contains("入出庫伝票番号")) return CsvType.MonitorLog;
-            var first = FirstField(h);
-            if (first.Equals("id", StringComparison.OrdinalIgnoreCase)
-                || first.Equals("LogId", StringComparison.OrdinalIgnoreCase)) return CsvType.Legacy;
             return CsvType.Unknown;
         }
 
@@ -142,7 +135,9 @@ namespace LeontecSyncLogSystem.Services
 
         /// <summary>
         /// Parse the monitor (モニタリスト単位) CSV body into entries (skips header + blank lines).
-        /// New 8-col layout: 開始時刻,終了時刻,入出庫伝票番号,顧客コード,品目コード,箱数,数量,状態(code 0/9).
+        /// Current 9-col layout:
+        /// 開始時刻,終了時刻,入出庫伝票番号,顧客コード,品目コード,箱数,数量,積込箱数,状態(code 0/9).
+        /// The older 8-col layout (no 積込箱数, 状態 at index 7) is still parsed for backward compat.
         /// </summary>
         public static List<MonitorEntry> ParseMonitor(string csv)
         {
@@ -150,17 +145,26 @@ namespace LeontecSyncLogSystem.Services
             foreach (var f in DataRows(csv, expectFirst: "開始時刻"))
             {
                 if (f.Count < 8) continue;
-                result.Add(new MonitorEntry
+                var e = new MonitorEntry
                 {
-                    StartTime = f[0],
-                    EndTime = f[1],
+                    StartTime = ToTime(f[0]),
+                    EndTime = ToTime(f[1]),
                     SlipNo = f[2],
                     CustomerCode = f[3],
                     ItemCode = f[4],
-                    Boxes = ToInt(f[5]),
-                    Quantity = ToInt(f[6]),
-                    StatusCode = f[7],     // 状態 code: 0=正常, 9=削除
-                });
+                    Boxes = ToInt(f[5]),    // 箱数
+                    Quantity = ToInt(f[6]), // 数量
+                };
+                if (f.Count >= 9)
+                {
+                    e.LoadedBoxes = ToInt(f[7]); // 積込箱数
+                    e.StatusCode = f[8];          // 状態 code: 0=正常, 9=削除
+                }
+                else
+                {
+                    e.StatusCode = f[7];          // legacy 8-col: 状態 at index 7 (no 積込箱数)
+                }
+                result.Add(e);
             }
             return result;
         }
@@ -177,8 +181,8 @@ namespace LeontecSyncLogSystem.Services
                 if (f.Count < 7) continue;
                 var op = new PalletOp
                 {
-                    StartTime = f[0],
-                    EndTime = f[1],
+                    StartTime = ToTime(f[0]),
+                    EndTime = ToTime(f[1]),
                     PlNo = f[2],
                     Customer = f[3],
                     DeliveryRun = f[4],
@@ -204,11 +208,11 @@ namespace LeontecSyncLogSystem.Services
                 if (f.Count < 11) continue;
                 result.Add(new DirectEntry
                 {
-                    StartTime = f[0],
-                    EndTime = f[1],
+                    StartTime = ToTime(f[0]),
+                    EndTime = ToTime(f[1]),
                     Customer = f[2],
                     DeliveryTo = f[3],
-                    ShipDate = f[4],
+                    ShipDate = ToDate(f[4]),
                     PartNo = f[5],
                     Capacity = ToInt(f[6]),
                     Boxes = ToInt(f[7]),
@@ -264,14 +268,37 @@ namespace LeontecSyncLogSystem.Services
             }
         }
 
-        private static string FirstField(string line)
-        {
-            var f = SplitCsv(line);
-            return f.Count > 0 ? f[0].Trim() : "";
-        }
-
         private static int ToInt(string s) =>
             int.TryParse(s.Trim(), out var v) ? v : 0;
+
+        private static readonly string[] TimeFormats = { "HH:mm:ss", "H:mm:ss", "HH:mm", "H:mm" };
+        private static readonly string[] DateFormats = { "yyyy/MM/dd", "yyyy-MM-dd", "yyyy/M/d" };
+
+        /// <summary>Parse a time-of-day cell ("HH:mm:ss"). Blank/invalid → null.</summary>
+        private static TimeOnly? ToTime(string s)
+        {
+            s = s.Trim();
+            if (s.Length == 0) return null;
+            return TimeOnly.TryParseExact(s, TimeFormats,
+                       System.Globalization.CultureInfo.InvariantCulture,
+                       System.Globalization.DateTimeStyles.None, out var t)
+                ? t
+                : (TimeOnly.TryParse(s, System.Globalization.CultureInfo.InvariantCulture,
+                       System.Globalization.DateTimeStyles.None, out var t2) ? t2 : null);
+        }
+
+        /// <summary>Parse a date cell ("yyyy/MM/dd"). Blank/invalid → null.</summary>
+        private static DateOnly? ToDate(string s)
+        {
+            s = s.Trim();
+            if (s.Length == 0) return null;
+            return DateOnly.TryParseExact(s, DateFormats,
+                       System.Globalization.CultureInfo.InvariantCulture,
+                       System.Globalization.DateTimeStyles.None, out var d)
+                ? d
+                : (DateOnly.TryParse(s, System.Globalization.CultureInfo.InvariantCulture,
+                       System.Globalization.DateTimeStyles.None, out var d2) ? d2 : null);
+        }
 
         /// <summary>Minimal RFC-4180-ish single-line CSV splitter (handles quoted fields).</summary>
         public static List<string> SplitCsv(string line)

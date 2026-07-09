@@ -9,35 +9,41 @@
 | .NET | 10.0 (`net10.0-windows10.0.19041.0`) | Runtime; bản Win10 cần cho RFCOMM WinRT (đổi net8→net10 để Designer + run dùng chung runtime 10.0.9 đã cài) |
 | WinForms | built-in | Dashboard desktop |
 | ASP.NET Core (Kestrel) | 10.x | Host web trong tiến trình (giám sát, endpoint) |
-| Entity Framework Core | 8.0.13 | ORM, bảng `SyncLogs` |
-| EF Core SQLite | 8.0.13 | DB mặc định (zero-config) |
-| EF Core SQL Server | 8.0.13 | Provider tùy chọn |
-| Npgsql EF Core (PostgreSQL) | 8.0.11 | Provider tùy chọn |
+| Entity Framework Core | 8.0.13 | ORM, bảng `CsvUploads` + bảng chuẩn hóa theo type + `Devices` |
+| Pomelo.EntityFrameworkCore.MySql | 8.0.3 | Provider MySQL/MariaDB (duy nhất) |
+| EFCore.NamingConventions | 8.0.3 | Đặt tên bảng/cột snake_case |
+| MariaDB (đóng gói) | 11.4.4 winx64 | Server DB nhúng, chạy như tiến trình con của app |
+| dotnet-ef / EF Core Design | 8.x | Tạo & áp migration |
 | InTheHand.Net.Bluetooth (32feet.NET) | 4.2.1 | Server Bluetooth SPP (RFCOMM) |
 
-### Android (SyncLogs/)
+### Android (`shipment_support/`, module `bluetooth_module`)
+
+App quét mã vạch kho Nittsu (Java thuần, Android View). Module gửi log dùng đúng các API
+Bluetooth Classic của nền tảng, không thêm thư viện đồng bộ nào (không Room/WorkManager/Retrofit).
 
 | Công nghệ | Phiên bản | Vai trò |
 |-----------|-----------|---------|
-| Kotlin | 1.9.23 | Ngôn ngữ |
-| Jetpack Compose (BOM) / Material3 | 2024.04.00 / 1.11.0 | UI |
-| Room | 2.6.1 | DB cục bộ |
-| WorkManager | 2.9.0 | Đồng bộ nền + backoff |
-| Retrofit / Gson / OkHttp | 2.11.0 / 2.10.1 / 4.12.0 | REST + JSON (Wi-Fi) |
-| Play Services Location | 21.2.0 | Geofencing |
-| Coroutines Play Services | 1.8.0 | Cầu Coroutine ↔ Task |
-| KSP | 1.9.23-1.0.19 | Annotation processor (Room) |
-| Android SDK | compile/target 34, min 26 | — |
-| Java | 17 | Biên dịch |
+| Java | thuần (không Kotlin) | Ngôn ngữ |
+| Android View + DataBinding | built-in | UI (không Jetpack Compose) |
+| SQLite (`SqliteHelper`) | built-in | DB nghiệp vụ của app (`car_stock.db`) — **không** dùng cho việc gửi log |
+| Bluetooth Classic SPP (RFCOMM) | platform API | Kênh gửi log (`BluetoothSyncManager`) |
+| `androidx.documentfile` | — | Đọc/ghi file log qua SAF `content://` |
+| Android SDK | compile/target 36, min 24 | — |
+
+> Chi tiết công nghệ + quy ước của toàn app `shipment_support` (kể cả 3 màn nghiệp vụ) nằm trong
+> `shipment_support/CLAUDE.md`. Tài liệu này chỉ quan tâm module `bluetooth_module`.
 
 ## 5.2. Mẫu thiết kế xuyên suốt
 
-- **Idempotency:** khóa `LogId`/`id` (Guid/UUID) là khóa dedup ở cả hai phía. PC suy `LogId`
-  ổn định bằng SHA-1 khi thiếu; Android dùng `OnConflictStrategy.REPLACE`.
-- **Tách phần thuần để test:** `FrameDecoder`, `CsvLogParser` không phụ thuộc phần cứng.
-- **Đồng bộ 2 lớp dự phòng (Android):** Bluetooth → Wi-Fi.
-- **Tự hồi phục:** server BT retry 5s; WorkManager backoff mũ.
-- **DB cắm-rút:** đổi provider runtime.
+- **Idempotency:** PC dùng cơ chế **supersede** cho dữ liệu typed (`UploadIndex` mới của cùng
+  `(TermId, Type)` đánh dấu bản cũ `Superseded`); Android dùng `OnConflictStrategy.REPLACE`.
+  (Dedup theo `LogId`/bảng `SyncLogs` cũ đã bị gỡ.)
+- **Tách phần thuần để test:** `FrameDecoder`, `CsvTypes` không phụ thuộc phần cứng.
+- **Gửi có xác nhận (Android):** batch nhiều file/1 kết nối + `BATCH_END` → PC trả `RESULT`; chỉ
+  file PC báo OK mới MOVE sang backup (không mất dữ liệu). Kênh Wi-Fi đã bỏ.
+- **Tự hồi phục:** server BT retry 5s; Android `connectWithRetry` (jitter) tránh kẹt kết nối BR/EDR.
+- **DB nhúng, tự chứa:** MariaDB đóng gói theo app, chạy như tiến trình con (port 3307 loopback);
+  schema qua **EF Core migrations**. Không cần cài MySQL trên máy đích.
 - **Singleton trạng thái sống (PC):** `ServiceStatus`, `CsvInbox`, ... đăng ký DI singleton.
 
 ## 5.3. Quy tắc phát triển bắt buộc (từ nay về sau)
@@ -96,8 +102,8 @@ dotnet build LeontecSyncLogSystem.slnx -c Release
 dotnet run --project LeontecSyncLogSystem -c Release
 
 # Android
-# Mở SyncLogs/ trong Android Studio, hoặc:
-cd SyncLogs && ./gradlew assembleDebug
+# Mở shipment_support/ trong Android Studio, hoặc:
+cd shipment_support && ./gradlew assembleDebug
 ```
 
 ## 5.5. Cạm bẫy đã biết (đừng vấp lại)

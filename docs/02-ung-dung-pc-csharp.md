@@ -35,20 +35,21 @@ LeontecSyncLogSystem/
   Worker.cs             BackgroundService: chạy BluetoothSppServer
   appsettings.json      Cấu hình: Logging, Kestrel, Sync (tên service BT), Database
   Models/
-    LogEntry.cs         Entity DB SyncLogs (canonical legacy, đã dedup)
     DeviceRecord.cs     Entity DB Devices — roster thiết bị BT (bền qua restart)
     CsvUpload.cs        Entity DB CsvUploads — 1 lần sync = 1 CSV (FK→Devices), giữ RawCsv + Type/TermId/UploadIndex/Superseded
     MonitorEntry.cs     Entity DB MonitorEntries — 1 dòng monitor (入出庫) chuẩn hóa
     PalletOp.cs         Entity DB PalletOps + PalletOpItems — thao tác pallet + item tách từ 品目明細
+    DirectEntry.cs      Entity DB DirectEntries — 1 dòng direct (直送管理) chuẩn hóa
   Data/
-    AppDbContext.cs     EF Core; SyncLogs(PK=LogId) + Devices(PK=Address) + CsvUploads(PK=Id, FK Device)
+    AppDbContext.cs     EF Core; devices(PK id, address UNIQUE) + csv_uploads(PK id, FK device_id) + bảng chuẩn hóa (snake_case)
   Services/
-    SyncOptions.cs        SyncOptions (BluetoothServiceName) + DatabaseOptions
-    CsvLogParser.cs       CSV → LogEntry (thuần, test được; nhận header 'id' hoặc 'LogId')
+    SyncOptions.cs        SyncOptions (BluetoothServiceName + BackupFolder) + DatabaseOptions
+    CsvBackupWriter.cs    Ghi bản sao thô của mỗi CSV nhận được ra đĩa (backup theo ngày, best-effort)
+    MasterStore.cs        Nguồn chân lý 2 file master (customer/item) trên PC: load/save (UTF-8 no BOM) + seed từ master-seed/ + Version() (SHA-256) cho đồng bộ ngược
+
     FrameDecoder.cs       Đóng/gỡ khung byte STX/ETX (thuần, test được)
-    LogIngestService.cs   Ghi DB có dedup (tương đương ON CONFLICT DO NOTHING)
     BluetoothSppServer.cs  Server RFCOMM SPP (32feet.NET), accept nhiều client
-    CsvTypes.cs           Định nghĩa type (monitor/pallet/legacy): header hằng, DetectType(header), ParseFilename(term/index), parser ra MonitorEntry/PalletOp(+Item)
+    CsvTypes.cs           Định nghĩa type (monitor/pallet/direct): header hằng, DetectType(header), ParseFilename(term/index), parser ra MonitorEntry/PalletOp(+Item)/DirectEntry
     CsvStore.cs           Lưu CSV upload + chuẩn hóa vào bảng theo type + supersede bản cũ; query theo device; trả RawCsv để hiển thị
     DeviceStore.cs        Lưu/nạp/xoá roster thiết bị xuống bảng Devices (bền qua restart)
     ServiceStatus.cs      Trạng thái sống thread-safe (client BT + server), singleton
@@ -61,19 +62,31 @@ LeontecSyncLogSystem/
 
 - Đọc `appsettings.json` từ thư mục exe.
 - Bind `SyncOptions` (mục `Sync`) và `DatabaseOptions` (mục `Database`).
-- Chọn provider DB theo `Database:Provider`: `UseSqlite` / `UseSqlServer` / `UseNpgsql`.
-  Schema tạo tự động lúc khởi động bằng `EnsureCreated`. Vì `EnsureCreated` **không** thêm bảng
-  mới vào DB đã tồn tại, với SQLite có thêm `CREATE TABLE IF NOT EXISTS` cho `Devices` **và**
-  `CsvUploads` (có FK→Devices, không phá dữ liệu cũ). Sau đó **nạp roster thiết bị** từ DB và
-  `ServiceStatus.SeedFromPersisted(...)`
-  để các máy đã thấy hiện lại (trạng thái offline) thay vì biến mất khi mở lại app.
+- **DB nhúng MariaDB:** nếu `Database:Embedded=true` (mặc định), khởi động `EmbeddedMariaDbServer`
+  **trước** khi dùng DbContext — chạy `mysqld` đóng gói ở `<app>/mariadb/` (port 3307 loopback, data ở
+  `%LOCALAPPDATA%/LeontecSyncLogSystem/db-data`), lần đầu tự init data dir. Connection string lấy từ
+  server nhúng. Nếu `Embedded=false` thì dùng `Database:ConnectionString` (MySQL ngoài).
+- Provider DB = **MySQL/MariaDB qua Pomelo** (`UseMySql(...).UseSnakeCaseNamingConvention()`). Schema
+  tạo/nâng cấp lúc khởi động bằng **EF Core migrations** (`db.Database.Migrate()`), thay cho
+  `EnsureCreated` + khối `CREATE/ALTER` SQLite cũ. Sau đó **nạp roster thiết bị** từ DB và
+  `ServiceStatus.SeedFromPersisted(...)` để các máy đã thấy hiện lại (offline) thay vì biến mất.
 - Đăng ký DI (đa số là **singleton** vì là trạng thái sống của tiến trình):
   - `ServiceStatus` — trạng thái BT toàn cục.
-  - `LogIngestService` — dedup + ghi DB.
   - `IDeviceStore`/`DeviceStore` — lưu/nạp roster thiết bị (bảng `Devices`).
   - `ICsvStore`/`CsvStore` — lưu/nạp CSV uploads (bảng `CsvUploads`).
+  - `ICsvBackupWriter`/`CsvBackupWriter` — ghi bản sao thô mỗi CSV ra đĩa. Thư mục gốc lấy từ
+    `Sync:BackupFolder`; rỗng ⇒ mặc định `%LOCALAPPDATA%/LeontecSyncLogSystem/backup`. Đường dẫn
+    đã giải quyết được **log ở mức Information lúc khởi động**.
   - `MonitorService` — dựng snapshot.
   - `Worker` (hosted service) — chạy server Bluetooth.
+
+> **Backup ra đĩa.** Sau khi mỗi CSV nhận được đã ghi vào DB, `BluetoothSppServer` gọi
+> `CsvBackupWriter.SaveAsync` để lưu thêm một bản thô vào
+> `Sync:BackupFolder/<yyyyMMdd>/<filename>`. `<filename>` = tên file upload của điện thoại (dựng lại
+> `{type}_{yyyyMMdd}_{termId}_{index}.txt` nếu khung không kèm tên). Ghi **nguyên tử** (file `.tmp`
+> rồi `Move` đè), UTF-8 không BOM, trung thực với byte nhận được. **Best-effort:** lỗi backup được
+> log mức Warning rồi nuốt — **không bao giờ làm hỏng quá trình ingest** (dòng đã nằm trong DB). Gửi
+> lại cùng `index` sẽ ghi đè idempotent.
 - Map endpoint HTTP: `POST /api/sync`, `GET /api/status`, `GET /health`.
 - **Bắt lỗi toàn cục:** trước `Application.Run`, đăng ký `Application.ThreadException` +
   `AppDomain.UnhandledException`, và bọc `new MainForm(...)`/`Run` trong try/catch → `ReportFatal`
@@ -105,8 +118,8 @@ LeontecSyncLogSystem/
 ## 2.4. Nhận Bluetooth — `Worker.cs` + `Services/BluetoothSppServer.cs`
 
 `Worker` là `BackgroundService`, chỉ làm một việc: dựng `BluetoothSppServer` với các
-dependency được tiêm (`ILogIngestService`, `ServiceStatus`, `CsvInbox`, tên service, logger)
-rồi `await server.RunAsync(stoppingToken)`.
+dependency được tiêm (`ServiceStatus`, `ICsvStore`, `IDeviceStore`, `ICsvBackupWriter`, tên
+service, logger) rồi `await server.RunAsync(stoppingToken)`.
 
 `BluetoothSppServer` (file ~214 dòng) là trái tim kênh chính:
 
@@ -122,9 +135,9 @@ rồi `await server.RunAsync(stoppingToken)`.
   tuyến**: khung bắt đầu bằng `PING` → `HandleHeartbeatAsync`; còn lại là dữ liệu → `AddFrame`
   + `IngestFrameAsync`. Mất kết nối/ lỗi → `MarkDisconnected`; chỉ đếm `AddDataSession` nếu
   kết nối có nhận **dữ liệu** (heartbeat-only không tính là session).
-- **`IngestFrameAsync`:** `CsvLogParser.ParseDocument` → lấy `WorkerId` từ dòng đầu cập nhật
-  client → `LogIngestService.IngestAsync` → thêm `ReceivedCsv` vào `CsvInbox` → ghi log
-  tóm tắt (số khung, số bản ghi chèn/trùng).
+- **`IngestFrameAsync`:** tách dòng tên file (nếu có) → phát hiện type từ header row-1
+  (`CsvTypes.DetectType`) → đếm số dòng theo parser của type → lưu upload qua `ICsvStore.SaveAsync`
+  (chuẩn hóa vào bảng theo type + supersede bản cũ) → ghi bản backup ra đĩa → log tóm tắt.
 - **`HandleHeartbeatAsync` (liveness):** nhận `PING,<deviceName>,<epochMillis>`, cập nhật
   `BtClientStatus.AddHeartbeat()` (đặt `LastSeenUtc`/`LastHeartbeatUtc`, đếm `Heartbeats`) và
   **trả** `PONG,<radioName>,<epochMillis>` (bọc STX/ETX) để Android xác nhận listener sống &
@@ -143,33 +156,26 @@ Bộ tách khung **có trạng thái**, biến luồng byte thành các khung te
 - `Push(byte)` → `string?`; `Push(byte[], count)` → `IEnumerable<string>` (nhiều khung trong
   một chunk vẫn yield đúng thứ tự; một khung bị cắt qua nhiều chunk vẫn ghép lại được).
 
-## 2.6. Phân tích CSV — `Services/CsvLogParser.cs`
+## 2.6. Phân tích CSV theo type — `Services/CsvTypes.cs`
 
-Thuần, test được. CSV cột: `id,workerId,jobType,barcodeData,startTime,endTime`.
+Thuần, test được. Định nghĩa 3 type CSV (monitor/pallet/direct) qua header row-1.
 
-- `ParseDocument(csv, syncMethod)` cho CSV nhiều dòng (Wi-Fi); `TryParseLine(...)` cho 1 dòng.
-- Bỏ dòng header nếu field đầu là `id`/`LogId` (không phân biệt hoa thường).
+- `DetectType(header)` xác định type từ token đặc trưng trong header (chịu được đổi thứ tự cột).
+- `ParseFilename(name)` tách `{type}_{yyyyMMdd}_{termId}_{index}.txt` (neo vào 8 chữ số ngày,
+  `index` = nhóm số cuối); vẫn nhận định dạng cũ `{type}__{index}__{termId}.csv`.
+- `ParseMonitor` / `ParsePallet` / `ParseDirect` chuẩn hóa từng dòng ra
+  `MonitorEntry` / `PalletOp`(+`PalletOpItem`) / `DirectEntry`.
 - **Tách CSV** kiểu RFC-4180: xử lý field có dấu nháy, nháy lồng `""`→`"`, dấu phẩy.
-- **Thời gian linh hoạt:** nhận **epoch-millis** (≥10 chữ số) của Android, hoặc ISO-8601
-  (nhiều biến thể có/không timezone, DD/MM và MM/DD). Chuẩn hóa về **UTC**.
-- **Suy `LogId` ổn định:** nếu `id` trống/sai → SHA-1 từ
-  `{WorkerId}|{JobType}|{BarcodeData}|{StartTime:O}|{EndTime:O}`, set version 5 + variant
-  (RFC 4122). Cùng nội dung ⇒ cùng Guid ⇒ dedup khi gửi lại.
 
-## 2.7. Ghi DB có dedup — `Services/LogIngestService.cs`
+> **Đã gỡ:** type `legacy` (header `id`/`LogId`) cùng `Services/CsvLogParser.cs`,
+> `Services/LogIngestService.cs` và bảng `SyncLogs` đã bị bỏ. CSV không khớp 3 type → `Type="unknown"`
+> (chỉ giữ `RawCsv`).
 
-Tương đương `ON CONFLICT (LogId) DO NOTHING`, độc lập provider. Trả
-`IngestResult(Received, Inserted, Duplicates)`:
+## 2.7. Idempotency — supersede
 
-1. **Gộp trùng trong batch:** group theo `LogId`, giữ bản đầu.
-2. **Bỏ LogId đã tồn tại:** query DB lấy các LogId đang có, loại ra.
-3. **Chèn 1 lần** `SaveChangesAsync()`. Nếu dính `DbUpdateException` (luồng/tiến trình khác
-   chèn xen vào giữa lúc check và write) → clear change tracker → **retry từng dòng**: dòng
-   nào đụng khóa thì detach và đếm là trùng.
-
-Thiết kế này an toàn với hai kênh chạy song song và với việc gửi lại — chèn cùng batch hai
-lần cho cùng kết quả `Inserted`. `Duplicates = Received − Inserted` (gộp cả trùng-trong-file
-do gộp ở bước 1 lẫn trùng-với-DB) để con số hiển thị trực quan.
+Không còn dedup theo `LogId`. Với dữ liệu typed hiện tại, `CsvStore` đánh dấu upload cũ hơn của
+cùng `(TermId, Type)` là `Superseded=true` khi có `UploadIndex` mới → số liệu dashboard không nhân
+đôi khi gửi lại. Bản backup trên đĩa (cùng index) được ghi đè idempotent.
 
 ## 2.8. Trạng thái sống & inbox
 
@@ -190,61 +196,62 @@ do gộp ở bước 1 lẫn trùng-với-DB) để con số hiển thị trực
   `GetRowsAsync(id)` (parse lại `RawCsv` → rows, **giữ cả dòng trùng trong file**), `ClearAsync`.
   Thay cho `CsvInbox` in-memory cũ ⇒ danh sách CSV **bền qua restart**.
 
-## 2.9. Mô hình dữ liệu & DB — `Models/LogEntry.cs`, `Data/AppDbContext.cs`
+## 2.9. Mô hình dữ liệu & DB — `Data/AppDbContext.cs`
 
-Bảng `SyncLogs`:
+> Bảng `SyncLogs` (và `Models/LogEntry.cs`) **đã bị gỡ bỏ**. Startup còn chạy
+> `DROP TABLE IF EXISTS "SyncLogs"` để dọn DB cũ (bảng rỗng nên không mất dữ liệu).
 
-| Cột | Kiểu | Ghi chú |
-|-----|------|---------|
-| `LogId` | Guid (PK) | `ValueGeneratedNever` — do thiết bị/parser cấp, DB không tự sinh |
-| `WorkerId` | string | Tên máy/thiết bị Android; có index để truy vấn theo máy |
-| `JobType` | string | 検品 / 出荷 / 直送 |
-| `BarcodeData` | string | Nội dung mã vạch |
-| `StartTime` | DateTime | UTC; có index cho thống kê "hôm nay" |
-| `EndTime` | DateTime | UTC |
-| `SyncMethod` | string | "Bluetooth" / "WiFi" — **do kênh nhận set**, không có trong CSV |
+Tên bảng/cột dùng **snake_case** (MySQL). Mọi bảng có PK số `id BIGINT AUTO_INCREMENT`; FK trỏ tới `id`.
 
-Bảng `Devices` (roster thiết bị BT, bền qua restart) — PK = `Address`:
+Bảng `devices` (roster thiết bị BT, bền qua restart) — PK = `id`:
 
 | Cột | Ghi chú |
 |-----|---------|
-| `Address` (PK) | Địa chỉ MAC Bluetooth của thiết bị |
-| `Name` / `WorkerId` | Tên máy + WorkerId gần nhất |
-| `FirstSeenUtc` / `LastSeenUtc` / `LastFrameUtc` / `LastHeartbeatUtc` | Mốc thời gian |
-| `FramesReceived` / `RecordsIngested` / `Sessions` / `Heartbeats` | Counters tích luỹ |
+| `id` (PK) | `bigint` auto-increment |
+| `address` (UNIQUE) | Địa chỉ MAC Bluetooth — khóa tự nhiên ổn định (index UNIQUE) |
+| `name` / `worker_id` | Tên máy + WorkerId gần nhất |
+| `first_seen_utc` / `last_seen_utc` / `last_frame_utc` / `last_heartbeat_utc` | `datetime(6)` |
+| `frames_received` / `records_ingested` / `sessions` / `heartbeats` | Counters tích luỹ |
 
-Bảng `CsvUploads` (mỗi lần sync = 1 CSV) — PK = `Id`, **FK `DeviceAddress`→Devices** (ON DELETE
-CASCADE), có index trên `DeviceAddress`:
+Bảng `csv_uploads` (mỗi lần sync = 1 CSV) — PK = `id`, **FK `device_id`→devices.id** (ON DELETE
+CASCADE), index trên `device_id`, `(term_id, type)`, `(type, log_date)`:
 
 | Cột | Ghi chú |
 |-----|---------|
-| `Id` (PK) | Guid |
-| `DeviceAddress` (FK) | Thuộc thiết bị nào (quan hệ Device 1—* CsvUploads) |
-| `ReceivedAtUtc` / `Source` / `Device` / `WorkerId` | Metadata |
-| `Type` / `TermId` / `UploadIndex` / `Superseded` | Envelope từ tên file (xem docs/04 §4.1b) |
-| `LogDate` | **Ngày của log** (date, lấy từ `yyyyMMdd` trong tên file) — dùng cho **bộ lọc ngày** ở bảng bên phải. `null` cho bản cũ không có ngày → fallback theo `ReceivedAtUtc`. Có index `(Type, LogDate)`. |
-| `RowCount` / `Inserted` / `Duplicates` | Số dòng / mới / trùng |
-| `RawCsv` | **Nội dung CSV nguyên văn** — parse lại để dựng rows (Csv 1—* rows) |
+| `id` (PK) | `bigint` auto-increment |
+| `device_id` (FK) | Thuộc thiết bị nào (quan hệ device 1—* csv_uploads). Lấy tên/WorkerId qua JOIN `devices` |
+| `received_at_utc` / `source` | `datetime(6)` / "Bluetooth"|"WiFi" |
+| `type` / `term_id` / `upload_index` / `superseded` | Envelope từ tên file (xem docs/04 §4.1b) |
+| `log_date` | **Ngày của log** (`DATE`, từ `yyyyMMdd` trong tên file) — dùng cho **bộ lọc ngày**. `null` cho bản cũ → fallback theo `received_at_utc`. |
+| `row_count` | Số dòng |
+| `raw_csv` | **Nội dung CSV nguyên văn** (`longtext`) — parse lại để dựng rows (csv 1—* rows) |
 
-**Quan hệ:** `Devices` 1—* `CsvUploads` (theo `DeviceAddress`); mỗi `CsvUploads` 1—* rows
-(suy ra bằng cách parse `RawCsv`). `SyncLogs` là bản canonical đã dedup (tách khỏi audit per-CSV).
+> Đã **bỏ** khỏi `csv_uploads` (2026-07-06): `Device`(tên)/`WorkerId` (trùng với `devices`) và
+> `Inserted`/`Duplicates` (tàn dư dedup cũ). `CsvUpload.DeviceAddress` giờ `[NotMapped]` — biến tạm để
+> `CsvStore.SaveAsync` resolve ra `device_id` rồi lưu 2 pha (insert upload → lấy id → insert rows chuẩn hóa).
 
-Provider đổi qua `Database:Provider` (`Sqlite`|`SqlServer`|`Postgres`); mặc định SQLite
-(`synclogs.db`, zero-config). File `synclogs.db*` là artifact test cục bộ — đừng commit.
+Bảng chuẩn hóa (`monitor_entries`/`pallet_ops`(+`pallet_op_items`)/`direct_entries`): cột thời-gian
+`開始/終了時刻` là `TIME` (`TimeOnly?`), `出荷日` là `DATE` (`DateOnly?`), số đếm `INT`, mã/`状態` `VARCHAR`.
+
+**Quan hệ:** `devices` 1—* `csv_uploads` (theo `device_id`); mỗi `csv_uploads` 1—* rows
+(parse `raw_csv`) và 1—* bản chuẩn hóa (cascade khi xoá upload).
+
+DB = **MariaDB đóng gói** (nhúng, port 3307) hoặc MySQL ngoài (`Database:Embedded=false`). Schema qua
+EF Core migrations (`Data/Migrations/`). Data nhúng ở `%LOCALAPPDATA%/LeontecSyncLogSystem/db-data`
+(không commit).
 
 ## 2.10. Giám sát & dashboard — `Monitoring/` + `MainForm.cs`
 
 - **`MonitorService.GetSnapshotAsync()`** dựng `StatusDto`: thời gian server/uptime; trạng
   thái server BT; danh sách client (từ `ServiceStatus`); **tổng số dòng log + log "hôm nay"**. Số
-  này đếm **`SUM(RowCount)` trên `CsvUploads` chưa bị supersede** (KHÔNG đếm `SyncLogs` — bảng legacy
-  này rỗng nên trước đây totals luôn = 0); "hôm nay" lọc theo `LogDate` (ngày trong tên file) so với
-  `DateTime.Today` (giờ địa phương).
+  này đếm **`SUM(RowCount)` trên `CsvUploads` chưa bị supersede**; "hôm nay" lọc theo `LogDate`
+  (ngày trong tên file) so với `DateTime.Today` (giờ địa phương).
   CSV **không** nằm trong snapshot — lấy riêng theo nhu cầu:
   `GetCsvsForDeviceAsync(address, day?)` (danh sách CSV của 1 thiết bị; khi truyền `day` thì **lọc
-  theo ngày trong TÊN FILE** = `LogDate`, không phải ngày nhận — upload legacy `LogDate==null` bị
+  theo ngày trong TÊN FILE** = `LogDate`, không phải ngày nhận — upload `LogDate==null` bị
   loại khi lọc) và `GetCsvRowsAsync(id)` (parse `RawCsv` → rows) qua `ICsvStore`.
-- **`MonitorService.ClearAllAsync()`** — xoá **toàn bộ** log + `CsvUploads` + `Devices` trong DB
-  (`ExecuteDeleteAsync`) **và** danh sách client sống (`ServiceStatus.ClearClients()`).
+- **`MonitorService.ClearAllAsync()`** — xoá **toàn bộ** `CsvUploads` (cascade sang bảng chuẩn hóa)
+  + `Devices` trong DB (`ExecuteDeleteAsync`) **và** danh sách client sống (`ServiceStatus.ClearClients()`).
   Có ghi `LogWarning`. Mang tính phá huỷ → UI phải xác nhận trước. (Không huỷ ghép đôi Bluetooth
   ở Windows — chỉ reset dữ liệu/trạng thái trong app.)
 - **`StatusModels.cs`**: `StatusDto` / `BtServerDto` / `ClientDto` / `ReceivedCsvDto` /
@@ -279,7 +286,18 @@ Provider đổi qua `Database:Provider` (`Sqlite`|`SqlServer`|`Postgres`); mặc
     phải** (`AutoSizeColumnsMode = Fill`) với **tỉ lệ % theo từng cột** (`ApplyLogColumnWeights` gán
     `FillWeight` theo header — 品目明細 rộng, #/状態 hẹp; chạy lại mỗi lần `DataBindingComplete` vì cột
     auto-generate). Né nhấp nháy bằng chữ ký `_dayLogSig`.
-  - **Nút "Xuất CSV" (CSV出力)** nằm **bên phải bộ lọc** (`_btnExportDay`, dock phải — chỉ còn 1 nút
+  - **Layout bộ lọc (`_filterRow`)** là **một `TableLayoutPanel` 1 hàng** (không còn `FlowLayoutPanel`
+    + hack `Padding` top): mỗi control `AutoSize` + `Anchor` (nhóm lọc neo `Left`, nút xuất neo `Right`)
+    nên **tự canh giữa theo chiều dọc và thẳng hàng** trên cùng một baseline — không còn offset top phải
+    chỉnh tay. Cột: `[nhãn ngày][‹][picker][›] · [nhãn type][monitor][pallet][direct] · [cột co giãn][Xuất CSV]`;
+    cột co giãn (`Percent 100`) đẩy nút Xuất sát mép phải. **Chiều cao hàng lọc = 34px, bằng đúng hàng 0
+    của `_clientsLayout` (nhãn trạng thái `● Bluetooth SPP` bên trái)** nên hàng lọc phải và nhãn server
+    trái nằm **cùng một baseline** giữa hai panel — không còn cảm giác panel phải lệch cao độ so với trái.
+  - **Canh mép trên hai group box:** group box trái nằm trong `TableLayoutPanel` (`_leftLayout`) nên bị
+    **Margin ô mặc định 3px** đẩy xuống; còn `_grpLogs` phải `Dock Fill` thẳng trong `Panel2` (Panel bỏ
+    qua Margin) → trước đây cao hơn trái đúng 3px. Đã đặt **`_split.Panel2.Padding = new Padding(3)`** để
+    thụt group box phải 3px đều bốn phía → mép trên hai bên trùng khít (đo pixel: cùng một `y`).
+  - **Nút "Xuất CSV" (CSV出力)** nằm **bên phải bộ lọc** (`_btnExportDay`, neo phải — chỉ còn 1 nút
     này, nút Export trên thanh công cụ đã bỏ). **Xuất ĐÚNG bảng đang hiển thị**: serialize thẳng
     `DataTable` mà `_dgvLogs` đang bind (cùng type+ngày, cùng bộ lọc, **cùng cột `#`**, cùng thứ tự
     dòng) ra `.csv` (UTF-8 BOM) qua `SaveFileDialog`. Bảng được dựng **một chỗ** ở
@@ -287,14 +305,39 @@ Provider đổi qua `Database:Provider` (`Sqlite`|`SqlServer`|`Postgres`); mặc
   - Header hiện tên radio + trạng thái lắng nghe; thời gian đổi UTC→giờ địa phương; ô **Hiện
     diện** xanh `● Online` khi còn heartbeat trong 15s, xám `○ Offline` khi quá hạn.
   - **Đa ngôn ngữ:** mọi nhãn/cột/thông báo lấy qua `UI/Localization.cs` (`Loc.T(key)`) — **EN /
-    VI / JA**, đổi tại chỗ bằng combo ngôn ngữ trên thanh công cụ (`Loc.SetLanguage` → sự kiện
-    `Loc.Changed` → `ApplyTexts` + làm mới). Mặc định lần đầu **theo locale Windows** (vi/ja →
-    đúng ngôn ngữ đó, còn lại → English); lựa chọn được lưu ở
-    `%LOCALAPPDATA%/LeontecSyncLogSystem/ui-language.txt`.
+    JA** (tiếng Việt đã bỏ khỏi tool PC), đổi tại chỗ bằng combo ngôn ngữ trên thanh công cụ
+    (`Loc.SetLanguage` → sự kiện `Loc.Changed` → `ApplyTexts` + làm mới). Mặc định lần đầu **theo
+    locale Windows** (ja → tiếng Nhật, còn lại → English); lựa chọn được lưu ở
+    `%LOCALAPPDATA%/LeontecSyncLogSystem/ui-language.txt` (giá trị `Vi` cũ nếu còn sót sẽ không
+    parse được và tự rơi về dò theo locale).
   - **Thanh công cụ** giờ chỉ còn: nút **"Reset"** (đỏ) + nhãn trạng thái/uptime/tổng + combo ngôn
     ngữ. Nút **Refresh** và **Export** đã bỏ (lưới tự làm mới mỗi 2s qua timer; Export đã có cạnh bảng).
   - **Nút "Reset"** (`_btnClear`, đỏ; trước tên là "Xoá toàn bộ DB"): hỏi xác nhận (MessageBox Yes/No)
     → `ClearAllAsync()` (xoá toàn bộ log + CsvUploads + Devices) → làm mới lưới. Dùng để test lại từ đầu.
+
+### Master (顧客 / 品目) — xem / sửa / lưu + đồng bộ ngược (Giai đoạn 1)
+
+Mục tiêu: sửa master trên PC rồi đẩy ngược về app, **khỏi phải cài lại app** mỗi lần đổi master.
+
+- **Lưu trữ (`Services/MasterStore.cs`, `IMasterStore`, singleton):** PC là **nguồn chân lý** của
+  2 file `customer_master.csv` (`デポ納入先,顧客コード,納入先,納入便`) và `item_master.csv`
+  (`品目コード,品目名称,箱種,品目名称_2`). File nằm ở `%LOCALAPPDATA%/LeontecSyncLogSystem/master/`,
+  lưu **UTF-8 không BOM** (khớp asset của app để Giai đoạn 2 stream nguyên byte). Lần đầu thiếu file
+  thì **seed** từ bản đóng kèm cạnh exe (`master-seed/`, copy từ assets Android qua csproj). `Version()`
+  = SHA-256 trên cả 2 file (hex) — để Giai đoạn 2 cho phép điện thoại bỏ qua re-import khi không đổi.
+- **UI (`MainForm`):** hàng nút **ngay trên panel1 (danh sách thiết bị)** — `_masterBar` gồm
+  **[顧客マスタ] [品目マスタ] [マスタ同期]**. Bấm 顧客/品目 → panel **bên phải đổi sang chế độ master**:
+  ẩn `_grpLogs`, hiện `_grpMaster` (grid `_dgvMaster` **sửa được**: thêm/xoá dòng, sửa ô) + thanh
+  công cụ **[行追加][行削除][保存][閉じる]**. Đúng một trong `_grpLogs`/`_grpMaster` hiện tại một thời điểm.
+- **Đọc/ghi round-trip:** `CsvToDataTable` (dùng lại `CsvTypes.SplitCsv`, dòng 1 = header, giữ
+  `_masterHeaders` gốc để lưu đúng) ↔ `DataTableToCsv` (ghi header gốc + mọi dòng **không rỗng**, bỏ
+  dòng trắng cuối lưới), escape CSV **giống hệt** export day-log → lưới và file không lệch nhau.
+- **Nút "マスタ同期" (`SyncMaster`) — Giai đoạn 1:** PC **không thể** tự mở kết nối Bluetooth tới điện
+  thoại (PC là SPP *server*, điện thoại là *client*), nên nút này lưu các sửa đang mở rồi báo master
+  đã sẵn sàng (kèm `Version()` rút gọn) để giao vào **lần sync kế tiếp** của từng máy. **Việc truyền
+  qua Bluetooth (đảo chiều) là Giai đoạn 2** — xem `docs/04` (chưa đấu).
+- **Không đụng day-log:** khi đang mở master, `RefreshDayLogAsync` return sớm (không rebind lưới ẩn,
+  không đè lên ô người dùng đang sửa).
 
 ## 2.11. Endpoint HTTP (Kestrel, trong tiến trình)
 
@@ -302,7 +345,7 @@ Provider đổi qua `Database:Provider` (`Sqlite`|`SqlServer`|`Postgres`); mặc
 |--------|-----------|----------|
 | `GET` | `/api/status` | Snapshot giám sát đầy đủ (chính là cái dashboard hiển thị) |
 | `GET` | `/health` | `{"status":"ok"}` |
-| `POST` | `/api/sync` | Tồn tại nhưng đang parse CSV; **Wi-Fi (JSON) chưa đấu nối** |
+| `POST` | `/api/sync` | Trả **501 Not Implemented** — Wi-Fi chưa đấu, đường CSV legacy đã gỡ |
 
 Mặc định bind `http://0.0.0.0:8090` (mục `Kestrel`). Test có thể override:
 `Kestrel__Endpoints__Http__Url=http://127.0.0.1:8099 dotnet run ...`.

@@ -11,13 +11,13 @@ namespace LeontecSyncLogSystem.Models
     public class DirectEntry
     {
         public long Id { get; set; }
-        public Guid UploadId { get; set; }
+        public long UploadId { get; set; }
 
-        public string StartTime { get; set; } = "";    // 開始時刻 (HH:mm:ss)
-        public string EndTime { get; set; } = "";       // 終了時刻
+        public TimeOnly? StartTime { get; set; }         // 開始時刻 (time of day)
+        public TimeOnly? EndTime { get; set; }           // 終了時刻
         public string Customer { get; set; } = "";       // 顧客
         public string DeliveryTo { get; set; } = "";     // 納入先
-        public string ShipDate { get; set; } = "";       // 出荷日 (yyyy/MM/dd)
+        public DateOnly? ShipDate { get; set; }          // 出荷日 (date)
         public string PartNo { get; set; } = "";         // 品番
         public int Capacity { get; set; }                 // 収容数
         public int Boxes { get; set; }                    // 箱数

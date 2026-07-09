@@ -9,7 +9,6 @@ namespace LeontecSyncLogSystem.Data
         {
         }
 
-        public DbSet<LogEntry> Logs => Set<LogEntry>();
         public DbSet<DeviceRecord> Devices => Set<DeviceRecord>();
         public DbSet<CsvUpload> CsvUploads => Set<CsvUpload>();
         public DbSet<MonitorEntry> MonitorEntries => Set<MonitorEntry>();
@@ -21,27 +20,30 @@ namespace LeontecSyncLogSystem.Data
         {
             base.OnModelCreating(modelBuilder);
 
+            // Table/column names use snake_case (see Program.cs UseSnakeCaseNamingConvention),
+            // e.g. Devices→devices, CsvUploads→csv_uploads, DeviceId→device_id.
+
             modelBuilder.Entity<DeviceRecord>(entity =>
             {
-                entity.ToTable("Devices");
-                entity.HasKey(e => e.Address);
-                entity.Property(e => e.Address).HasMaxLength(64);
+                entity.HasKey(e => e.Id); // surrogate numeric PK (auto-increment)
+                entity.Property(e => e.Address).IsRequired().HasMaxLength(64);
+                entity.HasIndex(e => e.Address).IsUnique(); // MAC is the stable natural key
                 entity.Property(e => e.Name).IsRequired().HasMaxLength(200);
                 entity.Property(e => e.WorkerId).HasMaxLength(100);
             });
 
             modelBuilder.Entity<CsvUpload>(entity =>
             {
-                entity.ToTable("CsvUploads");
                 entity.HasKey(e => e.Id);
-                entity.Property(e => e.DeviceAddress).IsRequired().HasMaxLength(64);
-                entity.Property(e => e.Source).HasMaxLength(20);
-                entity.Property(e => e.Device).HasMaxLength(200);
-                entity.Property(e => e.WorkerId).HasMaxLength(100);
-                entity.HasIndex(e => e.DeviceAddress);
+                entity.Ignore(e => e.DeviceAddress); // transient carrier, not a column
+                entity.Property(e => e.Source).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.Type).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.TermId).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.RawCsv).IsRequired().HasColumnType("longtext");
+                // LogDate is a calendar day, not a timestamp → DATE column.
+                entity.Property(e => e.LogDate).HasColumnType("date");
 
-                entity.Property(e => e.Type).HasMaxLength(20);
-                entity.Property(e => e.TermId).HasMaxLength(100);
+                entity.HasIndex(e => e.DeviceId);
                 entity.HasIndex(e => new { e.TermId, e.Type });
                 // Per-day log filter on the dashboard queries by (Type, LogDate).
                 entity.HasIndex(e => new { e.Type, e.LogDate });
@@ -49,61 +51,56 @@ namespace LeontecSyncLogSystem.Data
                 // Device (1) → (*) CsvUploads. Deleting a device removes its uploads.
                 entity.HasOne<DeviceRecord>()
                     .WithMany()
-                    .HasForeignKey(e => e.DeviceAddress)
+                    .HasForeignKey(e => e.DeviceId)
                     .OnDelete(DeleteBehavior.Cascade);
             });
 
-            // CsvUpload (1) → (*) MonitorEntries / PalletOps (cascade delete with the upload).
+            // CsvUpload (1) → (*) MonitorEntries / PalletOps / DirectEntries (cascade with the upload).
+            // Give the string columns explicit lengths so they map to VARCHAR (not LONGTEXT). These
+            // are faithful copies of CSV cells (times as "HH:mm:ss", codes, status "0/1/9").
             modelBuilder.Entity<MonitorEntry>(entity =>
             {
-                entity.ToTable("MonitorEntries");
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.UploadId);
+                entity.Property(e => e.SlipNo).HasMaxLength(64);
+                entity.Property(e => e.CustomerCode).HasMaxLength(64);
+                entity.Property(e => e.ItemCode).HasMaxLength(64);
+                entity.Property(e => e.Status).HasMaxLength(32);
+                entity.Property(e => e.StatusCode).HasMaxLength(8);
                 entity.HasOne<CsvUpload>().WithMany().HasForeignKey(e => e.UploadId).OnDelete(DeleteBehavior.Cascade);
             });
 
             modelBuilder.Entity<PalletOp>(entity =>
             {
-                entity.ToTable("PalletOps");
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.UploadId);
+                entity.Property(e => e.OpType).HasMaxLength(32);
+                entity.Property(e => e.PlNo).HasMaxLength(64);
+                entity.Property(e => e.Customer).HasMaxLength(128);
+                entity.Property(e => e.DeliveryRun).HasMaxLength(64);
+                entity.Property(e => e.ItemDetailRaw).HasMaxLength(2048);
+                entity.Property(e => e.StatusCode).HasMaxLength(8);
                 entity.HasOne<CsvUpload>().WithMany().HasForeignKey(e => e.UploadId).OnDelete(DeleteBehavior.Cascade);
             });
 
             modelBuilder.Entity<PalletOpItem>(entity =>
             {
-                entity.ToTable("PalletOpItems");
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.PalletOpId);
+                entity.Property(e => e.ItemCode).HasMaxLength(64);
                 entity.HasOne(i => i.PalletOp).WithMany(o => o.Items).HasForeignKey(i => i.PalletOpId).OnDelete(DeleteBehavior.Cascade);
             });
 
             modelBuilder.Entity<DirectEntry>(entity =>
             {
-                entity.ToTable("DirectEntries");
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.UploadId);
+                entity.Property(e => e.Customer).HasMaxLength(128);
+                entity.Property(e => e.DeliveryTo).HasMaxLength(128);
+                entity.Property(e => e.PartNo).HasMaxLength(64);
+                entity.Property(e => e.FactoryCode).HasMaxLength(32);
+                entity.Property(e => e.YokooPartNo).HasMaxLength(64);
                 entity.HasOne<CsvUpload>().WithMany().HasForeignKey(e => e.UploadId).OnDelete(DeleteBehavior.Cascade);
-            });
-
-            modelBuilder.Entity<LogEntry>(entity =>
-            {
-                entity.ToTable("SyncLogs");
-
-                // LogId is the natural PK and the deduplication key. We do NOT let the
-                // database generate it — the device supplies (or we derive) a stable Guid.
-                entity.HasKey(e => e.LogId);
-                entity.Property(e => e.LogId).ValueGeneratedNever();
-
-                entity.Property(e => e.WorkerId).IsRequired().HasMaxLength(100);
-                entity.Property(e => e.JobType).IsRequired().HasMaxLength(100);
-                entity.Property(e => e.BarcodeData).IsRequired().HasMaxLength(1024);
-                entity.Property(e => e.StartTime).IsRequired();
-                entity.Property(e => e.EndTime).IsRequired();
-                entity.Property(e => e.SyncMethod).IsRequired().HasMaxLength(20);
-
-                entity.HasIndex(e => e.WorkerId);
-                entity.HasIndex(e => e.StartTime);
             });
         }
     }

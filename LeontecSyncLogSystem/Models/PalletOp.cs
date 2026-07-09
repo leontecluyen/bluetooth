@@ -12,11 +12,11 @@ namespace LeontecSyncLogSystem.Models
     public class PalletOp
     {
         public long Id { get; set; }
-        public Guid UploadId { get; set; }
+        public long UploadId { get; set; }
 
         public string OpType { get; set; } = "";        // 状態 (operation)
-        public string StartTime { get; set; } = "";      // 開始時刻
-        public string EndTime { get; set; } = "";        // 終了時刻
+        public TimeOnly? StartTime { get; set; }         // 開始時刻 (time of day)
+        public TimeOnly? EndTime { get; set; }           // 終了時刻
         public string PlNo { get; set; } = "";           // PLNo.
         public string Customer { get; set; } = "";       // 顧客
         public string DeliveryRun { get; set; } = "";    // 納入便

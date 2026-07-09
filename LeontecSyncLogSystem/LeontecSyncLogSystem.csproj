@@ -36,12 +36,16 @@
     <!-- Bluetooth SPP server (RFCOMM) — accepts multiple device connections concurrently -->
     <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.2.1" />
 
-    <!-- EF Core 8 + database providers (switchable via Database:Provider) -->
+    <!-- EF Core 8 + MySQL (Pomelo). SQLite/SqlServer/Postgres removed — MySQL is the only DB now. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.13" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.13" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.13" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
-    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.6" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.13">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="8.0.3" />
+    <!-- snake_case table/column naming (MySQL convention) -->
+    <PackageReference Include="EFCore.NamingConventions" Version="8.0.3" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="10.0.9" />
   </ItemGroup>
 
   <ItemGroup>
@@ -50,6 +54,20 @@
     </None>
     <None Update="sample-logs.csv">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- Seed copies of the two master CSVs (taken from the Android app's assets). Copied next to
+         the exe so MasterStore can seed %LOCALAPPDATA%/.../master on first run. -->
+    <None Update="master-seed\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Bundled MariaDB server (not committed to git; see .gitignore). Copied next to the exe so the
+       app is self-contained. PreserveNewest avoids recopying ~hundreds of MB on every build. -->
+  <ItemGroup>
+    <None Include="mariadb\**\*" Condition="Exists('mariadb')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>mariadb\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </None>
   </ItemGroup>
 

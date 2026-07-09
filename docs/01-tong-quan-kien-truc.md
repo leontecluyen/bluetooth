@@ -13,14 +13,15 @@ Yêu cầu cốt lõi:
 - **Không trùng lặp**: gửi lại nhiều lần (do mất kết nối, retry) không được tạo bản ghi đôi.
 - **Thấy trạng thái tức thời**: người vận hành PC nhìn dashboard biết máy nào đang gửi, đã
   nhận bao nhiêu bản ghi.
-- **Tự động**: khi công nhân về văn phòng (vào vùng geofence), việc đồng bộ tự kích hoạt.
+- **Gửi có kiểm chứng**: khi gửi, PC xác nhận từng file đã nhận OK để máy cầm tay biết chắc
+  (giao thức batch `BATCH_END` → `RESULT`, xem [04 §4.1](04-giao-thuc-va-luong-du-lieu.md)).
 
 ## 1.2. Hai thành phần
 
 | Thành phần | Thư mục | Vai trò | Công nghệ chính |
 |-----------|---------|---------|-----------------|
-| **Ứng dụng Android** | `SyncLogs/` | Thu thập log, đồng bộ sang PC | Kotlin, Jetpack Compose, Room, WorkManager, Bluetooth Classic SPP, Retrofit |
-| **Ứng dụng PC** | `LeontecSyncLogSystem/` | Nhận log, lưu DB, hiển thị dashboard | C# .NET 8, WinForms, ASP.NET Core (Kestrel), EF Core, 32feet.NET |
+| **Ứng dụng Android** | `shipment_support/` | Quét mã vạch, ghi log ra file, gửi sang PC (module `bluetooth_module`) | Java, Android View, SQLite, Bluetooth Classic SPP |
+| **Ứng dụng PC** | `LeontecSyncLogSystem/` | Nhận log, lưu DB, hiển thị dashboard | C# .NET 10, WinForms, ASP.NET Core (Kestrel), EF Core, MariaDB nhúng, 32feet.NET |
 
 Android đóng vai **client Bluetooth**; PC đóng vai **server Bluetooth SPP**. Đây là điểm
 mấu chốt từng gây nhầm lẫn: trước đây tưởng dùng cổng COM nên không bao giờ thấy COM hiện ra.
@@ -36,8 +37,8 @@ Android (client)                              PC (server SPP)
    │  (vd "LUYEN"), khớp lỏng                      │  00001101-0000-1000-8000-00805F9B34FB
    │  ──► mở socket RFCOMM (secure→insecure) ────► │  accept → 1 task / 1 client
    │  ──► ghi STX + CSV + ETX  ──────────────────► │  FrameDecoder gỡ khung
-   │                                               │  CsvLogParser phân tích CSV
-   │                                               │  LogIngestService dedup + ghi DB
+   │                                               │  CsvTypes phát hiện type + parse
+   │                                               │  CsvStore chuẩn hóa + ghi DB
 ```
 
 - Đây là kênh **trọng tâm**, hoạt động trong cùng mạng nội bộ/khoảng cách Bluetooth.
@@ -49,26 +50,24 @@ Android (client)                              PC (server SPP)
 Android  ──► POST JSON (mảng JobLog, Gson) ──► http://<ip>:8080/api/sync  (PC)
 ```
 
-- Hiện **chưa đấu nối hoàn chỉnh**: phía PC có endpoint `POST /api/sync` nhưng đang phân
-  tích CSV, chưa nhận JSON. Khi bật lại Wi-Fi cần: thêm parse JSON-array (map `id`→`LogId`,
-  epoch→`DateTime`) và bind Kestrel ở cổng 8080.
-- Trên Android, kênh Wi-Fi vẫn được code đầy đủ (Retrofit) như **lớp dự phòng** trong
-  `SyncWorker`: Bluetooth thất bại → tự thử Wi-Fi.
+- Hiện **chưa đấu nối hoàn chỉnh**: endpoint `POST /api/sync` trả **501 Not Implemented**
+  (đường parse CSV/ingest cũ đã bị gỡ cùng bảng legacy `SyncLogs`). Khi bật lại Wi-Fi cần: đấu
+  ingest CSV typed vào `CsvUploads` (qua `ICsvStore`) và bind Kestrel ở cổng 8080.
+- Trên Android, app mới `shipment_support` **không còn** kênh Wi-Fi (đã bỏ Retrofit/`SyncWorker`);
+  chỉ gửi qua Bluetooth SPP. Đây chỉ là phần dành sẵn phía PC cho tương lai.
 
 ## 1.4. Sơ đồ luồng dữ liệu đầu-cuối
 
 ```
-[Android] Quét mã  →  JobLog (Room, syncStatus=PENDING)
+[Android shipment_support] Quét mã  →  ghi log ra FILE theo ngày (FileLogHelper)
+                          │              monitor_log / pallet_log / direct_log _YYYYMMDD.txt
+                          ▼  Màn 「ログ送信」: chọn ngày + file → 送信 (thủ công)
+                   LogSendActivity.sendSelected()  →  BluetoothSyncManager.sendBatch()
                           │
-                          ▼  WorkManager (thủ công / định kỳ 15' / geofence ENTER)
-                   SyncWorker.doWork()
-                          │
-        ┌─────────────────┴───────────────────┐
-        ▼ Lớp 1: Bluetooth                      ▼ Lớp 2: Wi-Fi (nếu lớp 1 fail)
-  BluetoothSyncManager.sync()             Retrofit POST /api/sync (JSON)
-  LogPayloadSerializer.toCsv()                  │
-  STX + CSV + ETX  ──────────────┐              └────────► (PC: hiện chưa nhận JSON)
-                                 │
+                          ▼  Bluetooth SPP (1 kết nối / cả batch)
+  STX + filename\r\n + CSV + ETX  (mỗi file 1 frame)  +  BATCH_END
+                                 │            ▲
+                                 │            └── RESULT\n<file>=OK|ERR  (PC xác nhận)
                                  ▼
 ══════════════════════════════ PC ══════════════════════════════
   BluetoothSppServer (accept loop, 1 task/client)
@@ -77,21 +76,20 @@ Android  ──► POST JSON (mảng JobLog, Gson) ──► http://<ip>:8080/ap
   FrameDecoder  (gỡ STX/ETX, ghép chunk → 1 khung CSV trọn vẹn)
         │
         ▼
-  CsvLogParser  (CSV → List<LogEntry>; tự sinh LogId nếu trống)
+  CsvTypes  (DetectType từ header row-1 → parse ra entity theo type)
         │
         ▼
-  LogIngestService  (dedup: gộp trùng trong batch → bỏ LogId đã có →
-                     ghi 1 lần, đụng khóa thì retry từng dòng)
+  CsvStore  (lưu CsvUpload giữ RawCsv + chuẩn hóa vào bảng theo type +
+             supersede bản cũ của cùng (TermId, Type))
         │
-        ├──► AppDbContext.SaveChanges()  →  bảng SyncLogs (EF Core)
-        ├──► CsvInbox.Add()              →  danh sách upload gần đây (cho dashboard)
+        ├──► AppDbContext.SaveChanges()  →  CsvUploads + bảng chuẩn hóa (EF Core)
         └──► ServiceStatus               →  cập nhật counters của client
                   │
                   ▼
   MonitorService.GetSnapshotAsync()  (mỗi 2s, gộp ServiceStatus + CsvInbox + DB → StatusDto)
                   │
                   ▼
-  MainForm (WinForms)  →  3 lưới: client Bluetooth | CSV đã nhận | bản ghi của CSV được chọn
+  MainForm (WinForms)  →  3 lưới: client Bluetooth | CSV đã nhận | log cả ngày theo type
 ```
 
 ## 1.5. Triết lý thiết kế (vì sao làm như vậy)
@@ -101,18 +99,20 @@ Android  ──► POST JSON (mảng JobLog, Gson) ──► http://<ip>:8080/ap
    chính. Dashboard đọc trạng thái **trực tiếp** từ DI container — không có vòng HTTP nội bộ,
    độ trễ thấp. Endpoint HTTP chỉ để giám sát từ xa.
 
-2. **Idempotent (chống trùng tuyệt đối).** `LogId` (Guid) là khóa dedup. Nếu máy không cấp
-   `id`, PC suy ra Guid ổn định bằng SHA-1 (kiểu v5) từ nội dung bản ghi → gửi lại bao nhiêu
-   lần vẫn cùng một khóa → DB không nhân đôi.
+2. **Idempotent (chống trùng).** Với dữ liệu typed, cơ chế **supersede** đảm bảo idempotent:
+   `UploadIndex` mới hơn của cùng `(TermId, Type)` đánh dấu upload cũ `Superseded=true` → số liệu
+   dashboard không nhân đôi khi gửi lại. (Bảng `SyncLogs` dedup theo `LogId` cũ đã bị gỡ.)
 
-3. **Tách phần thuần (pure) để test được.** `FrameDecoder` và `CsvLogParser` không phụ thuộc
+3. **Tách phần thuần (pure) để test được.** `FrameDecoder` và `CsvTypes` không phụ thuộc
    phần cứng, kiểm thử được độc lập với đúng khung byte mà Android gửi.
 
-4. **Tự hồi phục.** Server Bluetooth retry mỗi 5s nếu radio tắt/không có. Android có
-   WorkManager retry exponential-backoff khi cả hai kênh thất bại.
+4. **Tự hồi phục.** Server Bluetooth retry mỗi 5s nếu radio tắt/không có. Android mở socket SPP
+   có **thử lại + jitter** (`connectWithRetry`) để nhiều máy gửi cùng lúc không kẹt kết nối
+   BR/EDR; file gửi lỗi được giữ lại (không MOVE sang backup) để gửi lại sau.
 
-5. **DB cắm-rút (pluggable).** Đổi provider runtime: SQLite (mặc định, zero-config) /
-   SQL Server / PostgreSQL, qua `Database:Provider`.
+5. **DB nhúng, tự chứa (embedded).** App đóng gói sẵn **MariaDB** (`<app>/mariadb/`) và chạy nó như
+   tiến trình con (port 3307 loopback, data ở `%LOCALAPPDATA%`), nên copy app sang máy khác là chạy
+   được ngay — không cần cài MySQL. Chỉ hỗ trợ MySQL/MariaDB (qua Pomelo); schema qua EF Core migrations.
 
 ## 1.6. Đọc tiếp
 

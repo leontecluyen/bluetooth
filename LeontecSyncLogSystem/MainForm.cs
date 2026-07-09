@@ -1,5 +1,6 @@
 using System.Data;
 using LeontecSyncLogSystem.Monitoring;
+using LeontecSyncLogSystem.Services;
 using LeontecSyncLogSystem.UI;
 
 namespace LeontecSyncLogSystem
@@ -24,16 +25,35 @@ namespace LeontecSyncLogSystem
         // The visual controls (toolbar, panels, grids, filter bar) live in MainForm.Designer.cs
         // so the WinForms Designer can render the layout. This file holds all behaviour.
         private readonly MonitorService _monitor;
+        private readonly ICsvBackupWriter _backup;
+        private readonly IMasterStore _master;
         private readonly System.Windows.Forms.Timer _timer = new() { Interval = 2000 };
+
+        // Master edit state. _currentMaster is null when the right panel shows the day log; set to a
+        // kind while its master is open in the editable grid. _masterHeaders keeps the file's ORIGINAL
+        // row-1 header text so Save round-trips it exactly (grid column names may be de-duplicated).
+        private MasterKind? _currentMaster;
+        private bool _masterDirty;
+        private List<string> _masterHeaders = new();
 
         private bool _busy;
         private bool _langReady;       // true once the language box is populated (suppress its event during setup)
         private string _csvSig = "";
         private string _dayLogSig = "";
 
+        // CSV xuất ra theo Shift-JIS (SJIS, code page 932) để Excel tiếng Nhật mở đúng. Code page 932
+        // không có sẵn trong .NET hiện đại → phải đăng ký CodePagesEncodingProvider trước khi dùng.
+        private static readonly System.Text.Encoding ShiftJis = MakeShiftJis();
+
+        private static System.Text.Encoding MakeShiftJis()
+        {
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+            return System.Text.Encoding.GetEncoding("shift_jis");
+        }
+
         // Device selection drives which device's CSVs the bottom list shows (fetched from DB).
         private string? _selectedDeviceAddr;
-        private Guid? _selectedCsvId;
+        private long? _selectedCsvId;
         private bool _suppressDeviceSel;
         private bool _suppressCsvSel;
 
@@ -58,12 +78,14 @@ namespace LeontecSyncLogSystem
         /// <see cref="Load"/> handler and the refresh timer never run, so the null service is never
         /// dereferenced. Do NOT use this constructor at runtime.
         /// </summary>
-        public MainForm() : this(null!) { }
+        public MainForm() : this(null!, null!, null!) { }
 
-        public MainForm(MonitorService monitor)
+        public MainForm(MonitorService monitor, ICsvBackupWriter backup, IMasterStore master)
         {
             InitializeComponent();   // builds the layout skeleton (MainForm.Designer.cs)
             _monitor = monitor;
+            _backup = backup;
+            _master = master;
 
             BuildColumns();
             SetupLanguageBox();
@@ -76,9 +98,23 @@ namespace LeontecSyncLogSystem
             UpdateDateNav();
 
             _btnClear.Click += async (_, _) => await ClearAllAsync();
+            _btnOpenBackup.Click += (_, _) => OpenBackupFolder();
             _btnExportDay.Click += async (_, _) => await ExportCsvAsync();
             _btnPrevDay.Click += (_, _) => StepDay(-1);
             _btnNextDay.Click += (_, _) => StepDay(+1);
+
+            // Master editing: the two file buttons open a master in the right panel; Sync arms them.
+            _btnMasterCustomer.Click += (_, _) => OpenMaster(MasterKind.Customer);
+            _btnMasterItem.Click += (_, _) => OpenMaster(MasterKind.Item);
+            _btnSyncMaster.Click += (_, _) => SyncMaster();
+            _btnMasterAdd.Click += (_, _) => AddMasterRow();
+            _btnMasterDelete.Click += (_, _) => DeleteMasterRows();
+            _btnMasterSave.Click += (_, _) => SaveMaster();
+            _btnMasterClose.Click += (_, _) => CloseMaster();
+            // Any edit marks the master dirty so Close/Sync can warn before losing changes.
+            _dgvMaster.CellValueChanged += (_, _) => _masterDirty = true;
+            _dgvMaster.UserAddedRow += (_, _) => _masterDirty = true;
+            _dgvMaster.UserDeletedRow += (_, _) => _masterDirty = true;
             _timer.Tick += async (_, _) => await RefreshAsync();
             Load += async (_, _) =>
             {
@@ -137,8 +173,8 @@ namespace LeontecSyncLogSystem
 
         private void SetupLanguageBox()
         {
-            // Order MUST match the AppLang enum (En=0, Vi=1, Ja=2) so the index maps directly.
-            _cmbLang.Items.AddRange(new object[] { "English", "Tiếng Việt", "日本語" });
+            // Order MUST match the AppLang enum (En=0, Ja=1) so the index maps directly.
+            _cmbLang.Items.AddRange(new object[] { "English", "日本語" });
             _cmbLang.SelectedIndex = (int)Loc.Current;
             _langReady = true;
             _cmbLang.SelectedIndexChanged += (_, _) =>
@@ -159,11 +195,23 @@ namespace LeontecSyncLogSystem
         private void ApplyTexts()
         {
             _btnClear.Text = Loc.T("btn_clear");
+            _btnOpenBackup.Text = Loc.T("btn_open_backup");
             _btnExportDay.Text = Loc.T("btn_export");
+
+            _btnMasterCustomer.Text = Loc.T("btn_master_customer");
+            _btnMasterItem.Text = Loc.T("btn_master_item");
+            _btnSyncMaster.Text = Loc.T("btn_master_sync");
+            _btnMasterAdd.Text = Loc.T("btn_master_add");
+            _btnMasterDelete.Text = Loc.T("btn_master_delete");
+            _btnMasterSave.Text = Loc.T("btn_master_save");
+            _btnMasterClose.Text = Loc.T("btn_master_close");
+            if (_currentMaster is MasterKind k)
+                _lblMasterTitle.Text = MasterTitle(k);
 
             _grpClients.Text = Loc.T("grp_clients");
             _grpCsv.Text = Loc.T("grp_csv");
             _grpLogs.Text = Loc.T("grp_daylog");
+            _grpMaster.Text = Loc.T("grp_master");
 
             _lblDate.Text = Loc.T("lbl_date");
             _lblTypeFilter.Text = Loc.T("lbl_type");
@@ -274,12 +322,36 @@ namespace LeontecSyncLogSystem
         }
 
         /// <summary>
+        /// Open the on-disk CSV backup folder (<see cref="ICsvBackupWriter.Root"/>) in Windows
+        /// Explorer. The folder is created first so it always opens, even before any file has
+        /// arrived. Best-effort: a failure shows a localized message box.
+        /// </summary>
+        private void OpenBackupFolder()
+        {
+            try
+            {
+                var root = _backup.Root;
+                System.IO.Directory.CreateDirectory(root);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = root,
+                    UseShellExecute = true,   // let the shell open the folder in Explorer
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(Loc.T("backup_open_error", ex.Message), Loc.T("error"),
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
         /// Export the day-log to a CSV file — <b>exactly</b> what the grid currently shows. The grid
         /// is bound to a <see cref="DataTable"/> built once in <see cref="RefreshDayLogAsync"/>
         /// (same type + date, same per-type display filter, same "#" ordinal column, same row order);
         /// we serialize that very table so display and export can never drift. Change how the table is
-        /// built in one place and both the grid and this export follow. UTF-8 with BOM so Excel shows
-        /// Japanese.
+        /// built in one place and both the grid and this export follow. Encoded as Shift-JIS (SJIS)
+        /// so Excel on Japanese Windows opens it correctly.
         /// </summary>
         private async Task ExportCsvAsync()
         {
@@ -302,12 +374,14 @@ namespace LeontecSyncLogSystem
             try
             {
                 var sb = new System.Text.StringBuilder();
-                // Header = the grid's columns (includes the "#" ordinal); rows = the grid's rows.
-                sb.Append(string.Join(",", dt.Columns.Cast<DataColumn>().Select(c => CsvEscape(c.ColumnName)))).Append("\r\n");
+                // Export the grid's columns EXCEPT the leading "#" ordinal (số thứ tự) — that column
+                // is for on-screen reference only and must not appear in the exported CSV.
+                var cols = dt.Columns.Cast<DataColumn>().Where(c => c.ColumnName != "#").ToList();
+                sb.Append(string.Join(",", cols.Select(c => CsvEscape(c.ColumnName)))).Append("\r\n");
                 foreach (DataRow r in dt.Rows)
-                    sb.Append(string.Join(",", r.ItemArray.Select(o => CsvEscape(o?.ToString() ?? "")))).Append("\r\n");
+                    sb.Append(string.Join(",", cols.Select(c => CsvEscape(r[c]?.ToString() ?? "")))).Append("\r\n");
 
-                await File.WriteAllTextAsync(dlg.FileName, sb.ToString(), new System.Text.UTF8Encoding(true));
+                await File.WriteAllTextAsync(dlg.FileName, sb.ToString(), ShiftJis);
                 MessageBox.Show(Loc.T("export_done", dt.Rows.Count.ToString("N0"), dlg.FileName),
                     Loc.T("done"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
@@ -389,7 +463,7 @@ namespace LeontecSyncLogSystem
 
             // Restore the previously selected CSV; otherwise select the newest (top).
             int target = 0;
-            if (_selectedCsvId is Guid id)
+            if (_selectedCsvId is long id)
             {
                 var idx = csvs.FindIndex(c => c.Id == id);
                 if (idx >= 0) target = idx;
@@ -472,6 +546,10 @@ namespace LeontecSyncLogSystem
         /// </summary>
         private async Task RefreshDayLogAsync()
         {
+            // While a master is open the right panel shows the editable master grid, not the day log —
+            // don't rebind the hidden day-log grid (and never clobber the user's in-progress edits).
+            if (_currentMaster is not null) return;
+
             var typeKey = SelectedTypeKey;
             var date = DateOnly.FromDateTime(_dtpDay.Value.Date);
 
@@ -649,6 +727,214 @@ namespace LeontecSyncLogSystem
                 e.Value = local.ToString("MM-dd HH:mm:ss");
                 e.FormattingApplied = true;
             }
+        }
+
+        // ---------------- Master edit (customer / item) ----------------
+
+        /// <summary>Localized panel title for a master kind (e.g. "顧客マスタ (customer_master.csv)").</summary>
+        private string MasterTitle(MasterKind kind)
+        {
+            var name = kind == MasterKind.Customer ? Loc.T("master_customer") : Loc.T("master_item");
+            return $"{name}  ({_master.FileName(kind)})";
+        }
+
+        /// <summary>
+        /// Load a master CSV into the editable right-panel grid and show it (hiding the day log). If
+        /// another master is open with unsaved edits, prompt before switching.
+        /// </summary>
+        private void OpenMaster(MasterKind kind)
+        {
+            if (_currentMaster is not null && _currentMaster != kind && !ConfirmDiscardMaster())
+                return;
+
+            try
+            {
+                var file = _master.Load(kind);
+                var dt = CsvToDataTable(file.Csv, out _masterHeaders);
+
+                _currentMaster = kind;
+                _dgvMaster.DataSource = dt;
+                _lblMasterTitle.Text = MasterTitle(kind);
+                _masterDirty = false;
+
+                // Swap the right panel: hide the day log, show the master editor.
+                _grpLogs.Visible = false;
+                _grpMaster.Visible = true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(Loc.T("master_load_error", ex.Message), Loc.T("error"),
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>Return to the day-log view (prompting if the master has unsaved edits).</summary>
+        private void CloseMaster()
+        {
+            if (_masterDirty && !ConfirmDiscardMaster())
+                return;
+
+            _currentMaster = null;
+            _masterDirty = false;
+            _dgvMaster.DataSource = null;
+            _grpMaster.Visible = false;
+            _grpLogs.Visible = true;
+            _dayLogSig = "";            // force the day log to rebind now that it's visible again
+            _ = RefreshDayLogAsync();
+        }
+
+        private void AddMasterRow()
+        {
+            if (_dgvMaster.DataSource is not DataTable dt) return;
+            dt.Rows.Add(dt.NewRow());
+            _masterDirty = true;
+        }
+
+        /// <summary>Delete every row that has a selected cell (the grid allows multi-select).</summary>
+        private void DeleteMasterRows()
+        {
+            if (_dgvMaster.DataSource is not DataTable) return;
+            var rows = _dgvMaster.SelectedCells.Cast<DataGridViewCell>()
+                .Select(c => c.RowIndex).Distinct()
+                .OrderByDescending(i => i)
+                .ToList();
+            foreach (var ri in rows)
+            {
+                if (ri >= 0 && ri < _dgvMaster.Rows.Count && !_dgvMaster.Rows[ri].IsNewRow)
+                    _dgvMaster.Rows.RemoveAt(ri);
+            }
+            if (rows.Count > 0) _masterDirty = true;
+        }
+
+        /// <summary>
+        /// Serialize the editable grid back to its master CSV — original row-1 header + every
+        /// non-empty data row, UTF-8 no BOM. Same escaping as the day-log export so the two never
+        /// diverge. Grid and file always match after a save.
+        /// </summary>
+        private void SaveMaster()
+        {
+            if (_currentMaster is not MasterKind kind || _dgvMaster.DataSource is not DataTable dt)
+                return;
+
+            _dgvMaster.EndEdit();
+            try
+            {
+                var csv = DataTableToCsv(dt, _masterHeaders, out int rowCount);
+                _master.Save(kind, csv);
+                _masterDirty = false;
+                MessageBox.Show(Loc.T("master_saved", MasterTitle(kind), rowCount.ToString("N0")),
+                    Loc.T("done"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(Loc.T("master_save_error", ex.Message), Loc.T("error"),
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// "Sync master": in Giai đoạn 1 the PC cannot open a Bluetooth connection to a phone (the PC
+        /// is the SPP server, the phone the client), so this saves any open edits and confirms the
+        /// masters are armed for delivery on the phones' NEXT sync (implemented in Giai đoạn 2). It
+        /// reports the current content version so the operator can see it changed after an edit.
+        /// </summary>
+        private void SyncMaster()
+        {
+            if (_masterDirty && _currentMaster is not null)
+            {
+                var ask = MessageBox.Show(Loc.T("master_sync_save_first"), Loc.T("btn_master_sync"),
+                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                if (ask == DialogResult.Cancel) return;
+                if (ask == DialogResult.Yes) SaveMaster();
+            }
+
+            try
+            {
+                var version = _master.Version();
+                var shortVer = version.Length >= 8 ? version[..8] : version;
+                MessageBox.Show(Loc.T("master_sync_armed", shortVer), Loc.T("btn_master_sync"),
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(Loc.T("master_sync_error", ex.Message), Loc.T("error"),
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private bool ConfirmDiscardMaster() =>
+            MessageBox.Show(Loc.T("master_discard_confirm"), Loc.T("btn_master_close"),
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2)
+            == DialogResult.Yes;
+
+        /// <summary>
+        /// Parse a master CSV into a <see cref="DataTable"/>: row 1 = column headers (kept verbatim in
+        /// <paramref name="headers"/> for round-tripping; the table's column names are de-duplicated so
+        /// binding never throws on a repeated header). Every field is a string column.
+        /// </summary>
+        private static DataTable CsvToDataTable(string csv, out List<string> headers)
+        {
+            var lines = csv.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            var dt = new DataTable();
+            headers = new List<string>();
+
+            int start = 0;
+            while (start < lines.Length && string.IsNullOrWhiteSpace(lines[start])) start++;
+
+            if (start < lines.Length)
+            {
+                headers = CsvTypes.SplitCsv(lines[start]);
+                var used = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var h in headers)
+                {
+                    var name = string.IsNullOrWhiteSpace(h) ? "(col)" : h;
+                    var unique = name;
+                    int k = 2;
+                    while (!used.Add(unique)) unique = $"{name} ({k++})";
+                    dt.Columns.Add(unique);
+                }
+                start++;
+            }
+
+            int cols = dt.Columns.Count;
+            for (int i = start; i < lines.Length; i++)
+            {
+                if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                var fields = CsvTypes.SplitCsv(lines[i]);
+                var cells = new object[cols];
+                for (int c = 0; c < cols; c++)
+                    cells[c] = c < fields.Count ? fields[c] : "";
+                dt.Rows.Add(cells);
+            }
+            return dt;
+        }
+
+        /// <summary>
+        /// Serialize a master <see cref="DataTable"/> back to CSV using the ORIGINAL headers, skipping
+        /// rows whose every cell is blank (the grid's trailing edit row, or rows the user emptied).
+        /// <paramref name="rowCount"/> = data rows written.
+        /// </summary>
+        private static string DataTableToCsv(DataTable dt, List<string> headers, out int rowCount)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append(string.Join(",", headers.Select(CsvEscape))).Append("\r\n");
+
+            rowCount = 0;
+            foreach (DataRow r in dt.Rows)
+            {
+                if (r.RowState == DataRowState.Deleted) continue;
+                var vals = new string[dt.Columns.Count];
+                bool allBlank = true;
+                for (int c = 0; c < dt.Columns.Count; c++)
+                {
+                    vals[c] = r[c]?.ToString() ?? "";
+                    if (vals[c].Length != 0) allBlank = false;
+                }
+                if (allBlank) continue;
+                sb.Append(string.Join(",", vals.Select(CsvEscape))).Append("\r\n");
+                rowCount++;
+            }
+            return sb.ToString();
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)

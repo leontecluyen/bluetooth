@@ -52,25 +52,21 @@ namespace LeontecSyncLogSystem.Monitoring
     /// <summary>One received CSV upload (one Bluetooth sync) shown in the left-hand list.</summary>
     public class ReceivedCsvDto
     {
-        public Guid Id { get; set; }
+        public long Id { get; set; }
         public DateTime ReceivedAtUtc { get; set; }
         public string Source { get; set; } = "";
-        public string Device { get; set; } = "";
         /// <summary>Bluetooth address of the sending device — used to filter the list by device.</summary>
         public string Address { get; set; } = "";
-        public string? WorkerId { get; set; }
-        /// <summary>"monitor_log" | "pallet_log" | "legacy" | "unknown".</summary>
+        /// <summary>"monitor_log" | "pallet_log" | "direct_log" | "unknown".</summary>
         public string Type { get; set; } = "unknown";
         public string TermId { get; set; } = "";
         /// <summary>Which time this (TermId, Type) was sent.</summary>
         public int UploadIndex { get; set; }
-        /// <summary>Log day parsed from the filename (null for legacy uploads without a date).</summary>
+        /// <summary>Log day parsed from the filename (null for older uploads without a date).</summary>
         public DateTime? LogDate { get; set; }
         /// <summary>True if a newer index of the same (TermId, Type) has arrived.</summary>
         public bool Superseded { get; set; }
         public int RowCount { get; set; }
-        public int Inserted { get; set; }
-        public int Duplicates { get; set; }
         // Rows are fetched on demand (MonitorService.GetCsvTableAsync) when this CSV is selected.
     }
 
@@ -85,16 +81,5 @@ namespace LeontecSyncLogSystem.Monitoring
     {
         public int Total { get; set; }
         public int Today { get; set; }
-    }
-
-    public class LogDto
-    {
-        public Guid LogId { get; set; }
-        public string WorkerId { get; set; } = "";
-        public string JobType { get; set; } = "";
-        public string BarcodeData { get; set; } = "";
-        public DateTime StartTime { get; set; }
-        public DateTime EndTime { get; set; }
-        public string SyncMethod { get; set; } = "";
     }
 }

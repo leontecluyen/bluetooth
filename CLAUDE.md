@@ -27,20 +27,23 @@ LeontecSyncLogSystem/
   MainForm.Designer.cs  Designer-pattern layout skeleton (InitializeComponent) so the WinForms
                         Designer can render it; DI/data/localization stay in MainForm.cs
   Worker.cs             BackgroundService: spawns one serial listener per COM port
-  appsettings.json      Sync (BluetoothServiceName), Database (provider+connstr), Kestrel
-  Models/LogEntry.cs    DB entity (also the parse target)
-  Data/AppDbContext.cs  EF Core context; table SyncLogs, PK = LogId
+  appsettings.json      Sync (BluetoothServiceName + BackupFolder), Database (embedded MariaDB), Kestrel
+  Data/AppDbContext.cs  EF Core context; typed tables (csv_uploads + normalized rows + devices)
+  Data/DesignTimeDbContextFactory.cs  lets `dotnet ef` build the context without booting the app
+  Data/Migrations/      EF Core migrations (schema source of truth; applied via Migrate() at startup)
   Services/
-    SyncOptions.cs        SyncOptions (BluetoothServiceName) + DatabaseOptions
-    CsvLogParser.cs       CSV -> LogEntry (pure, testable; accepts 'id' or 'LogId' header)
+    SyncOptions.cs        SyncOptions (BluetoothServiceName + BackupFolder) + DatabaseOptions (embedded)
+    CsvBackupWriter.cs    writes a raw copy of each received CSV to disk (backup, best-effort)
+    MasterStore.cs        PC-owned source of truth for the 2 master CSVs (customer/item): load/save
+                          (UTF-8 no BOM) + first-run seed from master-seed/ + SHA-256 Version()
+    EmbeddedMariaDbServer.cs  runs the bundled MariaDB as a managed child process (self-contained DB)
     FrameDecoder.cs       STX/ETX byte framing (pure, testable)
-    LogIngestService.cs   dedup-aware insert (ON CONFLICT DO NOTHING equivalent)
     BluetoothSppServer.cs  32feet.NET RFCOMM SPP server, multi-client accept loop
     CsvInbox.cs           in-memory, capped list of received CSV uploads (+ their rows)
     ServiceStatus.cs      thread-safe live state (BT clients + server status), singleton
   Monitoring/
     MonitorService.cs     builds a StatusDto snapshot from ServiceStatus + CsvInbox + DB
-    StatusModels.cs       StatusDto/BtServerDto/ClientDto/ReceivedCsvDto/LogDto (UI + /api/status)
+    StatusModels.cs       StatusDto/BtServerDto/ClientDto/ReceivedCsvDto/LogsDto (UI + /api/status)
 ```
 
 Dashboard layout: left-top = Bluetooth clients + server state; **left-bottom = list of received
@@ -52,12 +55,14 @@ multiple uploads concatenated; columns = the type's row-1 header; identical rows
 day comes from each upload's filename date (`CsvUpload.LogDate`; legacy uploads without a date fall
 back to the received-local date).
 
-**Localized UI (EN / VI / JA).** All dashboard text goes through `UI/Localization.cs` (`Loc.T(key)`);
+**Localized UI (EN / JA).** All dashboard text goes through `UI/Localization.cs` (`Loc.T(key)`);
 a language combo in the toolbar switches at runtime (`Loc.Changed` → `ApplyTexts`). First-run
-language follows the OS UI culture (vi/ja → that, else English); the choice persists to
-`%LOCALAPPDATA%/LeontecSyncLogSystem/ui-language.txt`. The Android app mirrors this with `values/`
-(English, default/fallback) + `values-vi/` + `values-ja/` string resources and an in-app language
-picker (`LocaleHelper` + `SyncConfig.appLanguage`, default "system" = follow device locale).
+language follows the OS UI culture (ja → Japanese, else English); the choice persists to
+`%LOCALAPPDATA%/LeontecSyncLogSystem/ui-language.txt`. (Vietnamese was dropped from the PC tool;
+if `ui-language.txt` still holds a stale `Vi`, it no longer parses and falls back to OS detection.)
+The Android app still offers three languages via `values/` (English, default/fallback) +
+`values-vi/` + `values-ja/` string resources and an in-app language picker (`LocaleHelper` +
+`SyncConfig.appLanguage`, default "system" = follow device locale).
 
 Targets **`net10.0-windows10.0.19041.0`** (the Win10 build is required by 32feet.NET's WinRT
 RFCOMM server) with `<RollForward>LatestMajor</RollForward>`. **Why net10, not net8:** the box only
@@ -84,13 +89,16 @@ stores the date in `CsvUpload.LogDate`, then detects the **type from the CSV's r
 (authoritative) — see `Services/CsvTypes.cs`.
 
 CSV log types (canonical headers — keep Android writer + PC parser in sync):
-- **`monitor_log` (モニタリスト, 8 cols)** `開始時刻,終了時刻,入出庫伝票番号,顧客コード,品目コード,箱数,数量,状態`
-  (`状態` code 0=正常/9=削除) → `MonitorEntries`.
+- **`monitor_log` (モニタリスト, 9 cols)** `開始時刻,終了時刻,入出庫伝票番号,顧客コード,品目コード,箱数,数量,積込箱数,状態`
+  (`積込箱数` before the trailing `状態`; `状態` code 0=正常/9=削除) → `MonitorEntries` (`LoadedBoxes`).
+  Old 8-col layout (no `積込箱数`) still parsed for backward compat.
 - **`pallet_log` (パレット, 7 cols)** `開始時刻,終了時刻,PLNo.,顧客,納入便,品目明細 (品目コード:箱数x数量),状態`
   (`状態` 0=正常/1=移動/9=削除) → `PalletOps` + `PalletOpItems` (品目明細 = space-separated `code:boxesxqty`).
 - **`direct_log` (直送管理, 11 cols)** `開始時刻,終了時刻,顧客,納入先,出荷日,品番,収容数,箱数,納入数,工場コード,ヨコオ品番`
   (1 row = 1 completed 照合; no 状態 column) → `DirectEntries`.
-- **`legacy`** header `id`/`LogId` → dedup into `SyncLogs` by LogId (old scan format; still supported).
+
+  (The old `legacy` scan format — header `id`/`LogId`, table `SyncLogs` — has been **removed**. A CSV
+  whose header matches none of the three types is stored as `Type = "unknown"` with only its `RawCsv`.)
 
 **Per-type display filter (right panel, `MonitorService.ApplyDisplayFilter`):**
 - monitor: hide rows with `状態 == 9`; show the rest.
@@ -104,26 +112,36 @@ applies the display filter above. Columns come from the CSV's own row 1 (dynamic
 **Export CSV** button (right of the day-log filter) writes the currently-shown (filtered) day-log to a
 file — it serializes the exact `DataTable` the grid is bound to, so grid and file never drift. The
 left-bottom CSV list is also filtered by the date picker (by filename date `LogDate`). The toolbar is
-just a red **Reset** button (= `ClearAllAsync`), status labels, and the language combo (the old
+a red **Reset** button (= `ClearAllAsync`), an **Open backup folder** button (`OpenBackupFolder` →
+opens `ICsvBackupWriter.Root` in Explorer), status labels, and the language combo (the old
 Refresh/Export toolbar buttons were removed; the grid auto-refreshes every 2s). Toolbar totals
-("Logs today | Total") count `SUM(CsvUploads.RowCount)` of non-superseded uploads, not the empty
-legacy `SyncLogs` table.
+("Logs today | Total") count `SUM(CsvUploads.RowCount)` of non-superseded uploads.
 
-DB tables (relational, all survive restart):
-- `SyncLogs` — canonical **dedup'd** legacy logs (`LogId Guid PK`, …).
-- `Devices` (PK `Address`) — BT device roster + counters (`DeviceStore`, seeded offline on startup).
-- `CsvUploads` (PK `Id`, FK `DeviceAddress`→Devices, + `Type`/`TermId`/`UploadIndex`/`Superseded`/
-  `LogDate`, keeps `RawCsv`) — one row per sync (`CsvStore`). `LogDate` (date, from the filename's
-  `yyyyMMdd`; null on legacy uploads) drives the dashboard's per-day filter; index on `(Type, LogDate)`.
-- `MonitorEntries`, `PalletOps`, `PalletOpItems`, `DirectEntries` — normalized rows of typed CSVs
-  (FK→CsvUploads / PalletOps, cascade). Relation: **CsvUpload 1—* entries/ops 1—* items**.
+DB tables (relational, MySQL/MariaDB, snake_case names, all survive restart). Every table has a
+numeric surrogate PK (`id BIGINT AUTO_INCREMENT`); FKs reference `id`:
+- `devices` (PK `id`; `address` = BT MAC as a UNIQUE natural key) — BT device roster + counters
+  (`DeviceStore`, seeded offline on startup).
+- `csv_uploads` (PK `id`, FK `device_id`→devices, + `type`/`term_id`/`upload_index`/`superseded`/
+  `log_date`/`source`, keeps `raw_csv`) — one row per sync (`CsvStore`). Slimmed on 2026-07-06: the
+  duplicated device fields (`Device` name, `WorkerId`) and the vestigial dedup counters
+  (`Inserted`/`Duplicates`) were dropped — join `devices` for device info. `log_date` (DATE, from the
+  filename's `yyyyMMdd`; null on old uploads) drives the per-day filter; indexes on `(type, log_date)`
+  and `(term_id, type)`. `CsvStore.SaveAsync` resolves the transient `DeviceAddress` → `device_id`,
+  then two-phase saves (insert upload → get its id → insert normalized rows).
+- `monitor_entries`, `pallet_ops`, `pallet_op_items`, `direct_entries` — normalized rows of typed
+  CSVs (FK→csv_uploads / pallet_ops, cascade). Relation: **csv_upload 1—* entries/ops 1—* items**.
+  Time-of-day cells (`開始時刻`/`終了時刻`) are `TIME` (`TimeOnly?`); `出荷日` is `DATE` (`DateOnly?`).
   (Display/export read `RawCsv`, not these — they're the queryable normalized copy.)
 
 ## Ingestion channels
 
-> The protocol is defined by the Android app (`SyncLogs/`). Read its source before changing
-> the wire format — `bluetooth/BluetoothSyncManager.kt`, `sync/LogPayloadSerializer.kt`,
-> `network/SyncApiService.kt`, `config/SyncConfig.kt`, `data/JobLog.kt`.
+> The protocol is defined by the Android app (`shipment_support/`, Java) — the old Kotlin
+> `SyncLogs/` app was removed from the repo (2026-07-09). The sender lives entirely in the
+> `bluetooth_module` package; read its source before changing the wire format —
+> `bluetooth_module/BluetoothSyncManager.java` (SPP + batch protocol),
+> `bluetooth_module/DayLogRepository.java` (reads the app's real log files),
+> `bluetooth_module/BackupStore.java` (index), `bluetooth_module/BtSyncConfig.java` (PC target).
+> See `docs/03` and `shipment_support/CLAUDE.md`.
 
 1. **Bluetooth SPP (primary, the focus).** The PC is the **RFCOMM SPP _server_**; the phone
    is the client. Implemented with **32feet.NET** (`InTheHand.Net.Bluetooth`) in
@@ -131,43 +149,52 @@ DB tables (relational, all survive restart):
    `00001101-0000-1000-8000-00805F9B34FB` that accepts clients in a loop, each serviced on
    its own task ⇒ **multiple devices concurrently**. NOT COM ports (the earlier COM approach
    was wrong — that's why no COM ever appeared).
-   - The phone finds the PC by **Bluetooth radio name** = `SyncConfig.pcBluetoothName`
-     (default `"LUYEN"`), then connects to the SPP UUID and writes `STX + CSV + ETX`.
+   - The phone finds the PC by **Bluetooth radio name** = `BtSyncConfig.pcBluetoothName`, then
+     connects to the SPP UUID and writes framed data (see the batch protocol below).
    - **Name-match gotcha:** the dev PC's radio name is `"LUYEN - Front"`, not `"LUYEN"`. The
-     app now matches leniently (case-insensitive, contains-either-way) and logs all bonded
-     devices — see the edit in `BluetoothSyncManager.sync()`.
-   - CSV per `LogPayloadSerializer`: header `id,workerId,jobType,barcodeData,startTime,endTime`,
-     CRLF lines, RFC-4180 quoting, times = **epoch millis**, jobType is Japanese (検品/出荷/直送).
-   - `FrameDecoder` strips STX/ETX (per-connection); `CsvLogParser.ParseDocument` parses the
-     whole CSV (header `id` recognised); each client is tagged with its `WorkerId`.
-   - **Heartbeat (liveness).** Same SPP channel + STX/ETX framing carries control frames: the
-     phone sends `PING,<deviceName>,<epochMillis>` every **5 s** (only while the app is
-     foregrounded, and **skipped while a sync is transmitting** — `BluetoothSyncManager.syncInProgress`)
-     and the PC replies `PONG,<radioName>,<epochMillis>`. PC routes a frame as a heartbeat if it
-     starts with `PING` (CSV always starts with `id`/`LogId`). PC marks a device **Offline**
-     after **15 s** with no contact (`ServiceStatus.HeartbeatTimeout`, = 3 missed pings); the
-     Android `ListenerCard` shows **Listener OK** when it gets a `PONG` within 3 s. Heartbeats
-     never touch the DB and don't count as data frames/sessions. See `docs/04 §4.1`.
+     app matches leniently (case-insensitive, contains-either-way) and prefers the saved MAC —
+     see `BluetoothSyncManager.resolveTarget()`.
+   - **Batch protocol.** The phone sends **all files on ONE connection** — one frame per file
+     (`STX + {filename}\r\n + CSV + ETX`), then a single `BATCH_END` control frame. The PC ingests
+     each file, then replies with ONE `STX + "RESULT\n<filename>=OK|ERR\n…" + ETX` frame; the phone
+     moves to backup only the files the PC confirmed OK (`BluetoothSyncManager.sendBatch` ↔
+     `BluetoothSppServer.SendBatchResultAsync`). Old clients that never send `BATCH_END` just get no
+     reply (backward-compatible). See `docs/04 §4.1`.
+   - `FrameDecoder` strips STX/ETX (per-connection); the CSV type is detected from row 1
+     (`CsvTypes.DetectType`) and stored/normalized by `CsvStore`; each client is tagged with its `WorkerId`.
+   - **Heartbeat (liveness) — PC-only, no longer used.** The PC still routes a frame starting with
+     `PING` as a heartbeat and replies `PONG,<radioName>,<epochMillis>` (`ServiceStatus.HeartbeatTimeout`
+     = 15 s), but the current `shipment_support` app **does not send PING** — the old 5 s ping /
+     "Listener OK" feature was dropped. The PONG code is kept only for backward compatibility.
+     Heartbeats never touch the DB and don't count as data frames/sessions. See `docs/04 §4.1`.
 
-2. **Wi-Fi backup (secondary — currently parked).** The app posts a **JSON array** of JobLog
-   (Gson) to `http://<ip>:8080/api/sync`. The PC still exposes `POST /api/sync` but it
-   currently parses CSV, so JSON Wi-Fi ingest is NOT wired up yet. When re-enabling Wi-Fi:
-   add JSON-array parsing (map `id`→LogId, epoch→DateTime) and bind Kestrel on 8080.
+2. **Wi-Fi backup (secondary — parked).** The old `SyncLogs` app posted a **JSON array** of JobLog
+   (Gson) to `http://<ip>:8080/api/sync`; the new `shipment_support` app **has no Wi-Fi channel**
+   (Bluetooth only). The PC still exposes `POST /api/sync` but it returns **501 Not Implemented**
+   (the legacy CSV parser/ingest was removed with the `SyncLogs` table). When re-enabling Wi-Fi:
+   wire up typed-CSV ingest into `CsvUploads` (via `ICsvStore`) and bind Kestrel on 8080.
 
-Dedup (`LogIngestService`) = provider-agnostic `ON CONFLICT (LogId) DO NOTHING`: collapse
-in-batch dups → drop existing LogIds → row-by-row retry on a concurrent unique-key clash.
+**On-disk backup.** After each received CSV is persisted to the DB, `CsvBackupWriter` also writes a
+raw copy to `Sync:BackupFolder/<yyyyMMdd>/<filename>` (default
+`%LOCALAPPDATA%/LeontecSyncLogSystem/backup`; resolved path logged at startup). `<filename>` = the
+phone's upload name (rebuilt as `{type}_{yyyyMMdd}_{termId}_{index}.txt` if the wire frame had none);
+written atomically (temp + move), UTF-8 no BOM, faithful to the bytes received. **Best-effort** — a
+backup failure is logged (Warning) and swallowed so it never fails ingestion (the row is already in
+the DB). A re-send of the same upload index overwrites idempotently.
 
 ## HTTP endpoints (Kestrel, in-process — used for monitoring; Wi-Fi ingest parked)
 
 - `GET  /api/status` — full monitoring snapshot (also what the dashboard shows in-process)
 - `GET  /health` — `{"status":"ok"}`
-- `POST /api/sync` — exists but parses CSV; Wi-Fi (JSON) ingest not wired yet
+- `POST /api/sync` — returns 501 Not Implemented (Wi-Fi ingest parked; legacy CSV path removed)
 
 ## Build / run
 
 ```bash
+# One-time (per checkout): fetch the bundled MariaDB (NOT committed to git):
+pwsh scripts/fetch-mariadb.ps1                            # stages LeontecSyncLogSystem/mariadb/
 dotnet build LeontecSyncLogSystem.slnx -c Release
-dotnet run --project LeontecSyncLogSystem -c Release      # starts host + opens dashboard
+dotnet run --project LeontecSyncLogSystem -c Release      # starts embedded DB + host + dashboard
 # exe: LeontecSyncLogSystem/bin/Release/net10.0-windows10.0.19041.0/LeontecSyncLogSystem.exe
 ```
 
@@ -175,22 +202,31 @@ For Bluetooth to work the phone must be **bonded** to this PC and the app's `pcB
 must match (leniently) the PC's Bluetooth radio name (shown live in the dashboard header).
 Kestrel bind defaults to `http://0.0.0.0:8090` (`appsettings.json` → `Kestrel`); override for
 a test with `Kestrel__Endpoints__Http__Url=http://127.0.0.1:8099 dotnet run ...`.
-Schema auto-created at startup (`EnsureCreated`).
+Schema is created/updated at startup via **EF Core migrations** (`db.Database.Migrate()`).
 
 ## Conventions / gotchas
 
-- DB provider switchable (`Database:Provider` = Sqlite | SqlServer | Postgres); default
-  SQLite (`synclogs.db`, zero-config). `synclogs.db*` are local test artifacts — don't commit.
-- **Schema is created via `EnsureCreated` (no migrations).** `EnsureCreated` does NOT alter an
-  existing `synclogs.db` when the model gains a column. For SQLite, `Program.cs` startup runs
-  idempotent `ALTER TABLE … ADD COLUMN` / `CREATE … IF NOT EXISTS` statements (e.g. `LogDate` was
-  added this way) so existing dev DBs keep working without data loss — **add new columns there too**.
-  A real migration story is still needed before any persistent SqlServer/Postgres deployment.
+- **Database = bundled MariaDB (MySQL-compatible), embedded.** SQLite/SqlServer/Postgres were
+  removed — the app is MySQL-only via **Pomelo.EntityFrameworkCore.MySql** + snake_case naming
+  (`UseSnakeCaseNamingConvention`). By default (`Database:Embedded=true`) the app runs its OWN MariaDB
+  shipped under `<app>/mariadb/` as a child process (`Services/EmbeddedMariaDbServer.cs`) on a private
+  loopback port (`Database:EmbeddedPort`, default **3307**) with data in `%LOCALAPPDATA%/
+  LeontecSyncLogSystem/db-data` — so a target PC needs NO separate MySQL install. First run initializes
+  the data dir (`mariadb-install-db --allow-remote-root-access`); the server is shut down gracefully on
+  exit. Set `Database:Embedded=false` + `ConnectionString` to use an external MySQL/MariaDB instead.
+  The `mariadb/` binaries are **~260 MB and NOT committed** (`.gitignore`) — run
+  `scripts/fetch-mariadb.ps1` to stage them; the csproj copies them next to the exe (PreserveNewest).
+- **Schema via EF Core migrations** (`Data/Migrations/`, applied by `db.Database.Migrate()` at
+  startup). To change the schema: edit the entities/`AppDbContext`, then
+  `dotnet ef migrations add <Name> --project LeontecSyncLogSystem --output-dir Data\Migrations`
+  (a `Data/DesignTimeDbContextFactory.cs` lets the tools build the context without booting the app;
+  it uses an explicit MySQL version so `migrations add` needs no live DB). Never hand-edit an applied
+  migration — add a new one.
 - **UI text is localized** via `UI/Localization.cs` (`Loc.T`) on PC and `values*/strings.xml` on
   Android — add new strings as keys, never hard-code user-facing text. EN is the fallback.
 - `StatusModels.cs` DTOs are both the UI grid binding source and the `/api/status` JSON shape.
-- `FrameDecoder` + `CsvLogParser` are pure and hardware-free testable (a scratch harness
-  validated the exact Android frame: header `id`, epoch millis, 検品/出荷/直送, RFC-4180, split chunks).
+- `FrameDecoder` + `CsvTypes` (header detection + per-type row parsers) are pure and
+  hardware-free testable (RFC-4180 splitting, filename parsing, split chunks).
 - 32feet.NET requires a Bluetooth radio; the SPP server self-heals/retries if it's off/absent.
   The dashboard header shows the radio name + listening state.
 - It's a desktop GUI app now, so it can't run as a headless Windows Service (services have

@@ -10,7 +10,10 @@ namespace LeontecSyncLogSystem.Models
     /// </summary>
     public class DeviceRecord
     {
-        /// <summary>Bluetooth MAC address — primary key.</summary>
+        /// <summary>Surrogate numeric primary key (auto-increment).</summary>
+        public long Id { get; set; }
+
+        /// <summary>Bluetooth MAC address — the stable natural key (UNIQUE index).</summary>
         public string Address { get; set; } = string.Empty;
         public string Name { get; set; } = string.Empty;
         public string? WorkerId { get; set; }

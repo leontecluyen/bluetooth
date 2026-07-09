@@ -36,21 +36,21 @@ namespace LeontecSyncLogSystem.Services
         private const string BatchEnd = "BATCH_END";
         private const string BatchResultHeader = "RESULT";
 
-        private readonly ILogIngestService _ingest;
         private readonly ServiceStatus _status;
         private readonly ICsvStore _csvStore;
         private readonly IDeviceStore _deviceStore;
+        private readonly ICsvBackupWriter _backup;
         private readonly string _serviceName;
         private readonly ILogger _logger;
 
         public BluetoothSppServer(
-            ILogIngestService ingest, ServiceStatus status, ICsvStore csvStore, IDeviceStore deviceStore,
-            string serviceName, ILogger logger)
+            ServiceStatus status, ICsvStore csvStore, IDeviceStore deviceStore,
+            ICsvBackupWriter backup, string serviceName, ILogger logger)
         {
-            _ingest = ingest;
             _status = status;
             _csvStore = csvStore;
             _deviceStore = deviceStore;
+            _backup = backup;
             _serviceName = serviceName;
             _logger = logger;
         }
@@ -285,32 +285,16 @@ namespace LeontecSyncLogSystem.Services
                 if (type == CsvType.Unknown && fType != CsvType.Unknown) type = fType; // trust filename
                 if (string.IsNullOrWhiteSpace(termId)) termId = cs.WorkerId ?? name;
 
-                int received, inserted, duplicates = 0;
-                if (type == CsvType.Legacy)
+                // Typed (monitor/pallet/direct) or unknown → stored & normalized by CsvStore.
+                int received = type switch
                 {
-                    // Legacy scan format → dedup into the canonical SyncLogs table (LogId-keyed).
-                    var entries = CsvLogParser.ParseDocument(csv, "Bluetooth");
-                    received = entries.Count;
-                    if (entries.Count > 0) cs.SetDevice(entries[0].WorkerId);
-                    var r = await _ingest.IngestAsync(entries, token);
-                    inserted = r.Inserted;
-                    duplicates = r.Duplicates;
-                    cs.AddRecords(inserted);
-                }
-                else
-                {
-                    // Typed (monitor/pallet) or unknown → stored & normalized by CsvStore.
-                    received = type switch
-                    {
-                        CsvType.MonitorLog => CsvTypes.ParseMonitor(csv).Count,
-                        CsvType.PalletLog => CsvTypes.ParsePallet(csv).Count,
-                        CsvType.DirectLog => CsvTypes.ParseDirect(csv).Count,
-                        _ => CountNonHeaderRows(csv),
-                    };
-                    inserted = received;
-                    cs.SetDevice(termId);
-                    cs.AddRecords(received);
-                }
+                    CsvType.MonitorLog => CsvTypes.ParseMonitor(csv).Count,
+                    CsvType.PalletLog => CsvTypes.ParsePallet(csv).Count,
+                    CsvType.DirectLog => CsvTypes.ParseDirect(csv).Count,
+                    _ => CountNonHeaderRows(csv),
+                };
+                cs.SetDevice(termId);
+                cs.AddRecords(received);
 
                 if (received == 0 && type != CsvType.PalletLog && type != CsvType.MonitorLog)
                 {
@@ -323,24 +307,24 @@ namespace LeontecSyncLogSystem.Services
                 await _deviceStore.UpsertAsync(cs, token);
                 await _csvStore.SaveAsync(new Models.CsvUpload
                 {
+                    // DeviceAddress is transient — CsvStore resolves it to the device's DeviceId.
                     DeviceAddress = address,
                     Source = "Bluetooth",
-                    Device = name,
                     Type = CsvTypes.TypeKey(type),
                     TermId = termId,
                     UploadIndex = index,
                     // Log day from the filename; fall back to the local date we received it on.
                     LogDate = logDate?.ToDateTime(TimeOnly.MinValue) ?? DateTime.Now.Date,
-                    WorkerId = cs.WorkerId,
                     RowCount = received,
-                    Inserted = inserted,
-                    Duplicates = duplicates,
                     RawCsv = csv,
                 }, token);
 
+                // Keep a raw on-disk copy of the received file (best-effort; never fails ingestion).
+                await _backup.SaveAsync(filename, csv, type, termId, index, logDate, token);
+
                 _logger.LogInformation(
-                    "Ingested {Type} CSV from {Name} ({Addr}) term='{Term}' idx={Idx}: rows={Recv}, inserted={Ins}, dup={Dup}.",
-                    CsvTypes.TypeKey(type), name, address, termId, index, received, inserted, duplicates);
+                    "Ingested {Type} CSV from {Name} ({Addr}) term='{Term}' idx={Idx}: rows={Recv}.",
+                    CsvTypes.TypeKey(type), name, address, termId, index, received);
 
                 return (filename, true);
             }
