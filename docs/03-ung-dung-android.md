@@ -117,8 +117,14 @@ UUID SPP `00001101-0000-1000-8000-00805F9B34FB`; đóng khung `STX(0x02) + body 
 - **`buildUploadFilename(type, date, termId, index)`** → `{type}_{date}_{termId}_{index}.txt`
   (term **TRƯỚC** index; term rỗng → `"unknown"`). Dùng chung để tên gửi đi và tên lưu backup khớp
   nhau. Xem [04 §4.1b](04-giao-thuc-va-luong-du-lieu.md).
-- **`localTerminalName()`** = tên Bluetooth của máy (làm `termId`), fallback `Build.MODEL`.
-  `LogSendActivity` **bỏ mọi khoảng trắng** khỏi tên trước khi dựng filename.
+- **`localTerminalId()`** = **địa chỉ MAC Bluetooth của máy** làm `termId` (bỏ `:`, viết HOA — vd
+  `A1B2C3D4E5F6`) để mã máy **cố định + duy nhất** (tên Bluetooth có thể trùng/bị đổi). Lấy MAC theo
+  thứ tự: `Settings.Secure "bluetooth_address"` → `adapter.getAddress()` → **fallback
+  `localTerminalName()`** khi ROM không cho đọc MAC (từ Android 6 `getAddress()` bị ẩn thành
+  `02:00:00:00:00:00`). `LogSendActivity` vẫn **bỏ mọi khoảng trắng** khỏi kết quả trước khi dựng
+  filename (phòng khi rơi vào fallback tên có dấu cách).
+- **`localTerminalName()`** = tên Bluetooth của máy, fallback `Build.MODEL` (nay chỉ dùng làm fallback
+  cho `localTerminalId()`).
 - **`pairedDevices()`** = **chỉ** thiết bị đã bonded (KHÔNG discovery → không cần
   `BLUETOOTH_SCAN`). `unpairAll()` = huỷ pair mọi thiết bị bonded qua reflection `removeBond`
   (cho リセット).

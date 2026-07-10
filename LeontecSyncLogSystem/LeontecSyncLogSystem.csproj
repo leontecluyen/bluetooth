@@ -76,9 +76,6 @@
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="sample-logs.csv">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
     <!-- Seed copies of the two master CSVs (from the Android app's assets), next to the exe. -->
     <None Update="master-seed\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -95,10 +92,7 @@
       <_MasterSeedCsv Include="master-seed\*.csv" />
     </ItemGroup>
     <MakeDir Directories="$(OutDir)..\_master" />
-    <Copy SourceFiles="@(_MasterSeedCsv)"
-          DestinationFolder="$(OutDir)..\_master"
-          SkipUnchangedFiles="false"
-          OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="@(_MasterSeedCsv)" DestinationFolder="$(OutDir)..\_master" SkipUnchangedFiles="false" OverwriteReadOnlyFiles="true" />
     <Message Importance="high" Text="Seeded master CSVs → $(OutDir)..\_master (@(_MasterSeedCsv->'%(Filename)%(Extension)', ', '))" />
   </Target>
 

@@ -129,15 +129,19 @@ Dòng **ĐẦU TIÊN** trong khung (trước CSV) là **tên file**, mang metada
 **bao gồm NGÀY LOG** (`yyyyMMdd`), rồi **termID (TRƯỚC) và index (SAU)**:
 
 ```
-{type}_{yyyyMMdd}_{termId}_{index}.txt   vd: monitor_log_20260622_GalaxyS10_3.txt
+{type}_{yyyyMMdd}_{termId}_{index}.txt   vd: monitor_log_20260622_A1B2C3D4E5F6_3.txt
 <row1 = header CSV thật>
 <các dòng dữ liệu...>
 ```
 
 - `type` = `monitor_log` | `pallet_log` | `direct_log` (PC vẫn ưu tiên nhận diện type từ
   **header row-1**; tên file là phụ trợ). `yyyyMMdd` = **ngày của log** (mặc định hôm nay).
-  `termId` = **tên máy Android** (`deviceName`, đã **bỏ mọi khoảng trắng**), đặt **TRƯỚC** index.
-  `index` = lần gửi thứ mấy của (type) đó, là **cụm số ở CUỐI**.
+  `termId` = **ĐỊA CHỈ MAC Bluetooth của máy Android** (đã **bỏ dấu `:`, viết HOA** — vd
+  `A1B2C3D4E5F6`), đặt **TRƯỚC** index. Dùng MAC (thay cho tên Bluetooth trước đây) để mỗi máy có
+  mã **cố định + duy nhất** — tên Bluetooth có thể trùng hoặc bị đổi. `BluetoothSyncManager.localTerminalId()`
+  lấy MAC theo thứ tự `Settings.Secure "bluetooth_address"` → `adapter.getAddress()` →
+  **fallback tên/model máy** (khi ROM không cho đọc MAC; từ Android 6 `getAddress()` bị ẩn thành
+  `02:00:00:00:00:00`). `index` = lần gửi thứ mấy của (type) đó, là **cụm số ở CUỐI**.
 - **Tách không nhập nhằng:** PC neo theo cụm 8 chữ số ngày và lấy **`_<số>` ở cuối làm index**
   bằng regex `^(type)_(\d{8})_(term)_(\d+)$` (`CsvTypes.ParseFilename`). PC tách dòng đầu nếu nó
   **không** phải header CSV (`CsvTypes.IsFilenameLine`), phần còn lại là CSV. Android dựng tên qua

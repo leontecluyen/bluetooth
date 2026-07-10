@@ -128,9 +128,11 @@ runs the RFCOMM SPP server on net48 via the Win32 stack** (`Win32BluetoothListen
 ## Data contract — typed CSV over Bluetooth
 
 Each Bluetooth frame is `STX + (filename\r\n + CSV) + ETX`. The **first line is the upload
-filename** `{type}_{yyyyMMdd}_{termId}_{index}.txt` (e.g. `monitor_log_20260622_GalaxyS10_3.txt`):
-`yyyyMMdd` = **the log day** (Android defaults to today), then **`termId` (device name, spaces
-stripped) BEFORE the numeric `index`** (per-type send counter). `CsvTypes.ParseFilename` anchors on
+filename** `{type}_{yyyyMMdd}_{termId}_{index}.txt` (e.g. `monitor_log_20260622_A1B2C3D4E5F6_3.txt`):
+`yyyyMMdd` = **the log day** (Android defaults to today), then **`termId` (the phone's **Bluetooth
+MAC**, colons stripped + upper-cased, e.g. `A1B2C3D4E5F6`; falls back to the device name when the ROM
+won't expose the MAC — Android 6+ hides `getAddress()`) BEFORE the numeric `index`** (per-type send
+counter). `CsvTypes.ParseFilename` anchors on
 the 8-digit date and takes the **trailing `_<digits>` as the index** (regex
 `^(type)_(\d{8})_(term)_(\d+)$`); the old `{type}__{index}__{termId}.csv` (double-underscore, no
 date) is still parsed for backward compat. PC strips the filename line (`CsvTypes.IsFilenameLine`),
