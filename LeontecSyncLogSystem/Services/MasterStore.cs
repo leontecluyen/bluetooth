@@ -114,7 +114,9 @@ namespace LeontecSyncLogSystem.Services
                 Directory.CreateDirectory(Root);
                 var tmp = path + ".tmp";
                 File.WriteAllText(tmp, csv, Utf8NoBom);
-                File.Move(tmp, path, overwrite: true);
+                // net48 has no File.Move(overwrite) — delete the destination first.
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(tmp, path);
             }
             _logger.LogInformation("Saved master {Kind} to {Path} ({Bytes} bytes).", kind, path, csv.Length);
         }

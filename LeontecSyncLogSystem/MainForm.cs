@@ -470,7 +470,9 @@ namespace LeontecSyncLogSystem
                 foreach (DataRow r in dt.Rows)
                     sb.Append(string.Join(",", cols.Select(c => CsvEscape(r[c]?.ToString() ?? "")))).Append("\r\n");
 
-                await File.WriteAllTextAsync(dlg.FileName, sb.ToString(), ShiftJis);
+                // net48 has no File.WriteAllTextAsync — write on a worker thread to keep the UI responsive.
+                var exportText = sb.ToString();
+                await Task.Run(() => File.WriteAllText(dlg.FileName, exportText, ShiftJis));
                 MessageBox.Show(Loc.T("export_done", dt.Rows.Count.ToString("N0"), dlg.FileName),
                     Loc.T("done"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
@@ -608,7 +610,8 @@ namespace LeontecSyncLogSystem
 
             int max = w - p2Min - _split.SplitterWidth;
             if (max > p1Min)
-                _split.SplitterDistance = Math.Clamp((int)(w * 0.30), p1Min, max);
+                // net48 has no Math.Clamp — clamp (int)(w*0.30) into [p1Min, max] manually.
+                _split.SplitterDistance = Math.Min(Math.Max((int)(w * 0.30), p1Min), max);
         }
 
         /// <summary>Step the date filter by <paramref name="delta"/> days, clamped to [MinDate, today].</summary>

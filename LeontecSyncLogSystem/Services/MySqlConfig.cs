@@ -14,7 +14,7 @@ namespace LeontecSyncLogSystem.Services
     /// &lt;mysql&gt;
     ///   &lt;host&gt;localhost&lt;/host&gt;
     ///   &lt;port&gt;3306&lt;/port&gt;
-    ///   &lt;database&gt;leontec_sync&lt;/database&gt;
+    ///   &lt;database&gt;log_management&lt;/database&gt;
     ///   &lt;user&gt;root&lt;/user&gt;
     ///   &lt;password&gt;&lt;/password&gt;
     /// &lt;/mysql&gt;
@@ -25,7 +25,7 @@ namespace LeontecSyncLogSystem.Services
     {
         public string Host { get; set; } = "localhost";
         public int Port { get; set; } = 3306;
-        public string Database { get; set; } = "leontec_sync";
+        public string Database { get; set; } = "log_management";
         public string User { get; set; } = "root";
         public string Password { get; set; } = "";
 
@@ -61,7 +61,7 @@ namespace LeontecSyncLogSystem.Services
                 {
                     Host = Read(root, "host", "localhost"),
                     Port = int.TryParse(Read(root, "port", "3306"), out var p) ? p : 3306,
-                    Database = Read(root, "database", "leontec_sync"),
+                    Database = Read(root, "database", "log_management"),
                     User = Read(root, "user", "root"),
                     Password = Read(root, "password", ""),
                 };

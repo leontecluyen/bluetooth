@@ -6,9 +6,9 @@ writes and shows live status in a desktop dashboard.
 
 **Single application.** One WinForms (.NET 8) project, `LeontecSyncLogSystem`. On startup
 it boots an in-process generic host that runs the background work — Bluetooth SPP serial
-listeners, an embedded Kestrel web API, and the EF Core database — then runs the dashboard
+listeners, an in-process HttpListener web API, and the EF Core database — then runs the dashboard
 UI on the main thread. The dashboard reads state directly from the host's services
-(no HTTP round-trip to itself). Output assembly: `LeontecSyncLogSystem.exe`.
+(no HTTP round-trip to itself). Output assembly: `LogManagement.exe` (set by `<AssemblyName>LogManagement</AssemblyName>`; the shipped folder has no "Leontec" in any filename — the source `RootNamespace` stays `LeontecSyncLogSystem`).
 
 > Earlier this was split into a headless `PcBackgroundService` (Windows Service) + a
 > separate GUI. It has since been **merged into one desktop app** — there is no separate
@@ -22,16 +22,15 @@ UI on the main thread. The dashboard reads state directly from the host's servic
 
 ```
 LeontecSyncLogSystem/
-  Program.cs            host bootstrap (WebApplication) + WinForms message loop
+  Program.cs            host bootstrap (generic Host) + WinForms message loop
   MainForm.cs           dashboard logic; polls MonitorService every 2s (in-process)
   MainForm.Designer.cs  Designer-pattern layout skeleton (InitializeComponent) so the WinForms
                         Designer can render it; DI/data/localization stay in MainForm.cs
-  Worker.cs             BackgroundService: spawns one serial listener per COM port
-  appsettings.json      Sync (BluetoothServiceName + BackupFolder), Kestrel, Logging
-                        (DB settings are NOT here — external MySQL, see mysql.xml below)
-  Data/AppDbContext.cs  EF Core context; typed tables (csv_uploads + normalized rows + devices)
-  Data/DesignTimeDbContextFactory.cs  lets `dotnet ef` build the context without booting the app
-  Data/Migrations/      EF Core migrations (schema source of truth; applied via Migrate() at startup)
+  Worker.cs             BackgroundService (IHostedService): runs the Bluetooth SPP server accept loop
+  appsettings.json      Sync (BluetoothServiceName + BackupFolder), HTTP port (legacy "Kestrel" key),
+                        Logging (DB settings are NOT here — external MySQL, see mysql.xml below)
+  Data/AppDbContext.cs  EF Core 3.1 context (net48); typed tables (csv_uploads + normalized rows +
+                        devices) + DateOnly/TimeOnly value converters; schema via EnsureCreated()
   Services/
     AppPaths.cs           resolves the on-disk layout (app dir + <root>/_master,_backup,mysql.xml)
     SyncOptions.cs        SyncOptions (BluetoothServiceName + BackupFolder); no DB options anymore
@@ -41,6 +40,7 @@ LeontecSyncLogSystem/
                           (UTF-8 no BOM) + first-run seed from master-seed/ + SHA-256 Version()
     FrameDecoder.cs       STX/ETX byte framing (pure, testable)
     BluetoothSppServer.cs  32feet.NET RFCOMM SPP server, multi-client accept loop
+    HttpApiService.cs     IHostedService HTTP monitoring API via System.Net.HttpListener (net48; no Kestrel)
     CsvInbox.cs           in-memory, capped list of received CSV uploads (+ their rows)
     ServiceStatus.cs      thread-safe live state (BT clients + server status), singleton
   Monitoring/
@@ -106,17 +106,24 @@ The Android app still offers three languages via `values/` (English, default/fal
 `values-vi/` + `values-ja/` string resources and an in-app language picker (`LocaleHelper` +
 `SyncConfig.appLanguage`, default "system" = follow device locale).
 
-Targets **`net10.0-windows10.0.19041.0`** (the Win10 build is required by 32feet.NET's WinRT
-RFCOMM server) with `<RollForward>LatestMajor</RollForward>`. **Why net10, not net8:** the box only
-has `Microsoft.AspNetCore.App` as **10.x** (no 8.x), and the WinForms **Designer**
-(`DesignToolsServer.exe`) loads the project's `FrameworkReference` and demands that exact major — a
-net8 target made the designer keep prompting *"install AspNetCore.App 8.0"*, and installing it added
-a stray .NET 8 runtime that then broke `dotnet run` (`NETCore.App 8.0.28` vs ASP.NET-10's `10.0.9` →
-hostfxr 0x8000809C). All three shared frameworks are installed at **10.0.9** (NETCore / WindowsDesktop
-/ AspNetCore), so net10 makes **build + run + designer** all use the installed runtime — no prompts,
-no conflict. **Do NOT accept the designer's "install .NET 8" prompt.** Kestrel inside the WinForms
-app comes from `<FrameworkReference Include="Microsoft.AspNetCore.App" />` plus a few `<Using>` items
-that replace the implicit usings the Web SDK would otherwise provide.
+Targets **`net48`** (.NET Framework 4.8) — chosen because it ships **built into every Windows 10/11**,
+so the app runs on a clean PC with **nothing installed and no bundled runtime** (a ~7 MB output
+folder). This replaced an earlier modern-.NET (net10) + self-contained approach (~210 MB). **32feet.NET
+runs the RFCOMM SPP server on net48 via the Win32 stack** (`Win32BluetoothListener`), not WinRT — the
+`net462` lib of `InTheHand.Net.Bluetooth 4.2.1` exposes `BluetoothListener.Start/AcceptBluetoothClient`
+(verified before the port). net48 lacks a few modern APIs, handled as follows:
+- **`DateOnly`/`TimeOnly`** (used throughout) → backported by the **`Portable.System.DateTimeOnly`**
+  NuGet; EF value converters map them to MySQL `DATE`/`TIME` (see `Data/AppDbContext.cs`).
+- **records / `init` / `required` / range-index (`[..]`, `[^1]`)** → compile-time polyfills from
+  **`PolySharp`** (generates `IsExternalInit`, `RequiredMemberAttribute`, `System.Index/Range`, …).
+- **ASP.NET Core / Kestrel** is unavailable → the HTTP monitoring API uses **`System.Net.HttpListener`**
+  (`Services/HttpApiService.cs`); the app uses the **generic `Host`** (`Microsoft.Extensions.Hosting`
+  3.1) instead of `WebApplication`.
+- **`ApplicationConfiguration.Initialize()`** (net5+ WinForms) → classic
+  `Application.EnableVisualStyles()` + `SetCompatibleTextRenderingDefault(false)`.
+- A handful of net-core-only BCL overloads (`File.WriteAllTextAsync`, `File.Move(overwrite)`,
+  `string.Split(char, options)`, `Math.Clamp`, `Stream.ReadAsync(Memory<>)`) were swapped for their
+  net48 equivalents.
 
 ## Data contract — typed CSV over Bluetooth
 
@@ -229,7 +236,8 @@ numeric surrogate PK (`id BIGINT AUTO_INCREMENT`); FKs reference `id`:
    (Gson) to `http://<ip>:8080/api/sync`; the new `shipment_support` app **has no Wi-Fi channel**
    (Bluetooth only). The PC still exposes `POST /api/sync` but it returns **501 Not Implemented**
    (the legacy CSV parser/ingest was removed with the `SyncLogs` table). When re-enabling Wi-Fi:
-   wire up typed-CSV ingest into `CsvUploads` (via `ICsvStore`) and bind Kestrel on 8080.
+   wire up typed-CSV ingest into `CsvUploads` (via `ICsvStore`) and add a POST handler for the CSV
+   body in `Services/HttpApiService.cs` (HttpListener; no Kestrel on net48).
 
 **On-disk backup.** After each received CSV is persisted to the DB, `CsvBackupWriter` also writes a
 raw copy to `Sync:BackupFolder/<yyyyMMdd>/<filename>` (default `<root>/_backup`, i.e.
@@ -239,30 +247,43 @@ written atomically (temp + move), UTF-8 no BOM, faithful to the bytes received. 
 backup failure is logged (Warning) and swallowed so it never fails ingestion (the row is already in
 the DB). A re-send of the same upload index overwrites idempotently.
 
-## HTTP endpoints (Kestrel, in-process — used for monitoring; Wi-Fi ingest parked)
+## HTTP endpoints (HttpListener, in-process — used for monitoring; Wi-Fi ingest parked)
 
 - `GET  /api/status` — full monitoring snapshot (also what the dashboard shows in-process)
 - `GET  /health` — `{"status":"ok"}`
 - `POST /api/sync` — returns 501 Not Implemented (Wi-Fi ingest parked; legacy CSV path removed)
+
+Served by `Services/HttpApiService.cs` (`System.Net.HttpListener`, an `IHostedService`), NOT Kestrel.
+It tries to bind `http://+:8090/` (all interfaces, may need an admin urlacl) and **falls back to
+`http://localhost:8090/`**, and if even that fails it disables the API with a warning — the dashboard
+reads state in-process and never depends on this HTTP server. Port comes from the legacy
+`Kestrel:Endpoints:Http:Url` setting in `appsettings.json` (default 8090).
 
 ## Build / run
 
 ```bash
 # MySQL is installed/run SEPARATELY (its own installer / Windows service) — the app does NOT bundle
 # or start a DB. Ensure MySQL is up and mysql.xml points at it (defaults: localhost:3306, db
-# leontec_sync, user root, empty password). The app CREATES the DB + schema via EF migrations at startup.
+# log_management, user root, empty password). The app CREATES the DB + schema via EF Core
+# db.Database.EnsureCreated() at startup.
 dotnet build LeontecSyncLogSystem.slnx -c Release
 dotnet run --project LeontecSyncLogSystem -c Release      # starts host + dashboard, connects to MySQL
-# exe: LeontecSyncLogSystem/bin/Release/net10.0-windows10.0.19041.0/LeontecSyncLogSystem.exe
+# exe: LeontecSyncLogSystem/bin/Release/LogManagement/LogManagement.exe (~7 MB folder)
 ```
+
+### Deploy to a clean PC (no install needed)
+
+The app targets **.NET Framework 4.8**, which is **built into every Windows 10/11**. So deployment is
+just: **copy the `LogManagement/` output folder to the target PC and run the exe** — no runtime
+install, no bundled runtime (~7 MB). On first run the app creates its siblings `_master` (seeded)/
+`_backup`/`mysql.xml` per the on-disk layout. (MySQL is still external — install/run it separately
+and point `mysql.xml` at it.)
 
 For Bluetooth to work the phone must be **bonded** to this PC and the app's `pcBluetoothName`
 must match (leniently) the PC's Bluetooth radio name (shown live in the dashboard header).
-Kestrel bind defaults to `http://0.0.0.0:8090` (`appsettings.json` → `Kestrel`); override for
-a test with `Kestrel__Endpoints__Http__Url=http://127.0.0.1:8099 dotnet run ...`.
-Schema is created/updated at startup via **EF Core migrations** (`db.Database.Migrate()`) — but a DB
-that is **down at startup no longer crashes the app**: the failure is logged and the dashboard opens
-showing "MySQL: disconnected"; migrations/roster load on a later restart once MySQL is up.
+Schema is created at startup via **`db.Database.EnsureCreated()`** — but a DB that is **down at
+startup no longer crashes the app**: the failure is logged and the dashboard opens showing
+"MySQL: disconnected"; schema/roster load on a later restart once MySQL is up.
 
 ## Conventions / gotchas
 
@@ -271,17 +292,20 @@ showing "MySQL: disconnected"; migrations/roster load on a later restart once My
   (`UseSnakeCaseNamingConvention`). The **embedded/bundled MariaDB was removed** (2026-07-09): the app
   no longer ships or starts a DB. It reads connection settings from **`<root>/mysql.xml`**
   (`Services/MySqlConfig.cs` → host/port/database/user/password; a missing file is created with
-  defaults `localhost:3306`, db `leontec_sync`, user `root`, empty password) and connects. The DB
-  version is pinned (`new MySqlServerVersion(10.4.0)`) instead of `ServerVersion.AutoDetect` so the
-  DbContext builds offline (AutoDetect would open a connection at config time and throw if MySQL is
-  down). Connection health shows in the toolbar (`MonitorService.IsDbConnectedAsync`). A DB that is
-  down at startup does NOT crash the app (see Build/run).
-- **Schema via EF Core migrations** (`Data/Migrations/`, applied by `db.Database.Migrate()` at
-  startup). To change the schema: edit the entities/`AppDbContext`, then
-  `dotnet ef migrations add <Name> --project LeontecSyncLogSystem --output-dir Data\Migrations`
-  (a `Data/DesignTimeDbContextFactory.cs` lets the tools build the context without booting the app;
-  it uses an explicit MySQL version so `migrations add` needs no live DB). Never hand-edit an applied
-  migration — add a new one.
+  defaults `localhost:3306`, db `log_management`, user `root`, empty password) and connects. On net48
+  the DB is **EF Core 3.1** (last EF Core supporting .NET Framework) via **Pomelo 3.2**; `UseMySql`
+  takes only the connection string (no `ServerVersion` arg — Pomelo 3.2 doesn't open a connection at
+  config time, so the context builds offline). Connection health shows in the toolbar
+  (`MonitorService.IsDbConnectedAsync`). A DB that is down at startup does NOT crash the app.
+- **Schema via `db.Database.EnsureCreated()`** at startup (NOT migrations — EF Core 3.1 migration
+  tooling isn't wired up on net48; `Data/Migrations/` + the design-time factory were removed). To
+  change the schema: edit the entities/`AppDbContext`; EnsureCreated builds the tables from the model
+  on a fresh DB. **`DateOnly`/`TimeOnly` need EF value converters** (already in `AppDbContext`:
+  `TimeOnly↔TimeSpan`→`time(6)`, `DateOnly↔DateTime`→`date`) since the polyfilled types aren't mapped
+  automatically. EnsureCreated does NOT alter an existing DB — for a schema change on an already-created
+  DB, drop it (or the affected tables) and let EnsureCreated recreate. **Bulk ops:** EF Core 3.1 has no
+  `ExecuteDelete`/`ExecuteUpdate` — clears use `db.Database.ExecuteSqlRawAsync("DELETE FROM …")`
+  (cascades via FK) and supersede/replace load rows then `RemoveRange`/set-flag + `SaveChanges`.
 - **UI text is localized** via `UI/Localization.cs` (`Loc.T`) on PC and `values*/strings.xml` on
   Android — add new strings as keys, never hard-code user-facing text. EN is the fallback.
 - `StatusModels.cs` DTOs are both the UI grid binding source and the `/api/status` JSON shape.

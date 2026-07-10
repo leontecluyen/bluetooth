@@ -56,8 +56,11 @@ namespace LeontecSyncLogSystem.Services
                 // overwrite stays idempotent. Write to a temp file then move so a crash mid-write
                 // never leaves a half-written backup.
                 var tmp = path + ".tmp";
-                await File.WriteAllTextAsync(tmp, csv, new System.Text.UTF8Encoding(false), token);
-                File.Move(tmp, path, overwrite: true);
+                // net48 has no File.WriteAllTextAsync / File.Move(overwrite) — write on a worker thread
+                // and replace the destination manually (delete-then-move) to stay overwrite-idempotent.
+                await Task.Run(() => File.WriteAllText(tmp, csv, new System.Text.UTF8Encoding(false)), token);
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(tmp, path);
 
                 _logger.LogDebug("Backed up upload to {Path} ({Bytes} bytes).", path, csv.Length);
                 return path;

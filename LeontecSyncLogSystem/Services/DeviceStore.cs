@@ -72,7 +72,8 @@ namespace LeontecSyncLogSystem.Services
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            await db.Devices.ExecuteDeleteAsync(token);
+            // EF Core 3.1 has no ExecuteDelete; a raw DELETE clears the roster table.
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM `devices`", token);
         }
     }
 }

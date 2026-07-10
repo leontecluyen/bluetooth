@@ -37,8 +37,10 @@ namespace LeontecSyncLogSystem.Monitoring
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            int deleted = await db.CsvUploads.ExecuteDeleteAsync(token);
-            await db.Devices.ExecuteDeleteAsync(token);
+            // EF Core 3.1 has no ExecuteDelete; count first, then raw DELETE (cascades to typed tables).
+            int deleted = await db.CsvUploads.CountAsync(token);
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM `csv_uploads`", token);
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM `devices`", token);
             _status.ClearClients();
             _logger.LogWarning(
                 "CLEAR ALL: deleted {Count} CSV uploads (+ normalized rows) + Devices; cleared the live client list.", deleted);

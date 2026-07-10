@@ -1,10 +1,20 @@
+using System;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using LeontecSyncLogSystem.Models;
 
 namespace LeontecSyncLogSystem.Data
 {
     public class AppDbContext : DbContext
     {
+        // DateOnly/TimeOnly are backported to net48 by Portable.System.DateTimeOnly, but EF Core 3.1 +
+        // Pomelo don't know how to store them. These converters map TimeOnly↔TimeSpan (MySQL TIME) and
+        // DateOnly↔DateTime (MySQL DATE) so the DB schema/values match the modern-.NET build.
+        private static readonly ValueConverter<TimeOnly, TimeSpan> TimeOnlyConverter =
+            new(v => v.ToTimeSpan(), v => TimeOnly.FromTimeSpan(v));
+        private static readonly ValueConverter<DateOnly, DateTime> DateOnlyConverter =
+            new(v => v.ToDateTime(TimeOnly.MinValue), v => DateOnly.FromDateTime(v));
+
         public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
         {
         }
@@ -62,6 +72,8 @@ namespace LeontecSyncLogSystem.Data
             {
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.UploadId);
+                entity.Property(e => e.StartTime).HasConversion(TimeOnlyConverter).HasColumnType("time(6)");
+                entity.Property(e => e.EndTime).HasConversion(TimeOnlyConverter).HasColumnType("time(6)");
                 entity.Property(e => e.SlipNo).HasMaxLength(64);
                 entity.Property(e => e.CustomerCode).HasMaxLength(64);
                 entity.Property(e => e.ItemCode).HasMaxLength(64);
@@ -74,6 +86,8 @@ namespace LeontecSyncLogSystem.Data
             {
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.UploadId);
+                entity.Property(e => e.StartTime).HasConversion(TimeOnlyConverter).HasColumnType("time(6)");
+                entity.Property(e => e.EndTime).HasConversion(TimeOnlyConverter).HasColumnType("time(6)");
                 entity.Property(e => e.OpType).HasMaxLength(32);
                 entity.Property(e => e.PlNo).HasMaxLength(64);
                 entity.Property(e => e.Customer).HasMaxLength(128);
@@ -95,6 +109,9 @@ namespace LeontecSyncLogSystem.Data
             {
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.UploadId);
+                entity.Property(e => e.StartTime).HasConversion(TimeOnlyConverter).HasColumnType("time(6)");
+                entity.Property(e => e.EndTime).HasConversion(TimeOnlyConverter).HasColumnType("time(6)");
+                entity.Property(e => e.ShipDate).HasConversion(DateOnlyConverter).HasColumnType("date");
                 entity.Property(e => e.Customer).HasMaxLength(128);
                 entity.Property(e => e.DeliveryTo).HasMaxLength(128);
                 entity.Property(e => e.PartNo).HasMaxLength(64);

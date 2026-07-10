@@ -189,7 +189,8 @@ namespace LeontecSyncLogSystem.Services
                     conn = new ActiveConn { Stream = stream, Name = name, Address = address };
 
                     int read;
-                    while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token)) > 0)
+                    // net48 Stream has no Memory<byte> overload → use the classic (byte[],int,int) one.
+                    while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
                     {
                         foreach (var frame in decoder.Push(buffer, read))
                         {
@@ -395,7 +396,7 @@ namespace LeontecSyncLogSystem.Services
             await conn.WriteLock.WaitAsync(token);
             try
             {
-                await conn.Stream.WriteAsync(packet, token);
+                await conn.Stream.WriteAsync(packet, 0, packet.Length, token);
                 await conn.Stream.FlushAsync(token);
             }
             finally

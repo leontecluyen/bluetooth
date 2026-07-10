@@ -101,7 +101,7 @@ namespace LeontecSyncLogSystem.Services
             // Legacy double-underscore envelope first (no date): {type}__{index}__{termId}.
             if (name.Contains("__"))
             {
-                var parts = name.Split("__", StringSplitOptions.None);
+                var parts = name.Split(new[] { "__" }, StringSplitOptions.None);
                 if (parts.Length >= 3)
                 {
                     var ltype = FromKey(parts[0]);
@@ -228,7 +228,7 @@ namespace LeontecSyncLogSystem.Services
         public static List<PalletOpItem> ParseItemDetail(string detail, PalletOp parent)
         {
             var items = new List<PalletOpItem>();
-            foreach (var token in detail.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            foreach (var token in detail.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 var colon = token.IndexOf(':');
                 if (colon <= 0) continue;

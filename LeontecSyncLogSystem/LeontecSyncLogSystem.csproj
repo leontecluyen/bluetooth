@@ -2,63 +2,74 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- Windows 10 build target required by 32feet.NET (RFCOMM server via WinRT).
-         Target net10 because that's the runtime set actually installed on this box for ALL three
-         shared frameworks (Microsoft.NETCore.App / WindowsDesktop.App / AspNetCore.App all 10.0.9).
-         Critically, the WinForms *Designer* (DesignToolsServer.exe) loads the project's
-         FrameworkReference (Microsoft.AspNetCore.App) and demands that exact major — only 10.x is
-         installed, so a net8 target made the designer keep prompting "install AspNetCore.App 8.0"
-         (clicking install adds a stray .NET 8 runtime that then breaks `dotnet run`). net10 makes
-         build + run + designer all use the installed 10.0.9. -->
-    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
-    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <!-- .NET Framework 4.8: ships built-in with every Windows 10/11, so the app runs on a clean PC
+         with NOTHING installed and NO bundled runtime (a few-MB exe). This replaced the modern .NET
+         (net10) + self-contained approach. 32feet.NET runs the RFCOMM SPP server on net48 via the
+         Win32 Bluetooth stack (Win32BluetoothListener) — verified with the BtProbe project. -->
+    <TargetFramework>net48</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Modern C# syntax (records, init, required, range/index) is used across the code; net48's BCL
+         lacks the supporting types, so PolySharp (below) generates them at compile time. LangVersion
+         latest lets the compiler emit that syntax. -->
+    <LangVersion>latest</LangVersion>
     <RootNamespace>LeontecSyncLogSystem</RootNamespace>
-    <AssemblyName>LeontecSyncLogSystem</AssemblyName>
-    <!-- Roll forward to the newest installed patch/major if the exact 10.0 build is missing. -->
-    <RollForward>LatestMajor</RollForward>
-    <!-- Output folder = "LogManagement" instead of the raw TFM name (net10.0-windows10.0.19041.0).
-         This is the deployed "app/" folder: exe lives in bin/<Config>/LogManagement/, and AppPaths
-         puts _master/_backup/mysql.xml in its parent (bin/<Config>/). -->
+    <!-- Build output is named "LogManagement" — produces LogManagement.exe / .exe.config / .pdb.
+         The RootNamespace (source-internal, never appears in an output filename) is left unchanged
+         to avoid a repo-wide namespace rename. No "Leontec" appears in the shipped folder. -->
+    <AssemblyName>LogManagement</AssemblyName>
+    <!-- Product/title metadata shown in the exe's file properties — kept free of "Leontec" too. -->
+    <Product>Log Management</Product>
+    <AssemblyTitle>Log Management</AssemblyTitle>
+    <Company>Log Management</Company>
+    <!-- Output folder = "LogManagement" (the deployed app/ folder): exe in bin/<Config>/LogManagement/,
+         and AppPaths puts _master/_backup/mysql.xml in its parent (bin/<Config>/). -->
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <OutputPath>bin\$(Configuration)\LogManagement\</OutputPath>
-    <!-- Turn OFF Visual Studio's fast up-to-date check so pressing Debug/Run (F5) always invokes the
-         Build target — otherwise VS skips it when nothing changed and our post-build targets
-         (CopyMasterSeedToRoot + CreateRootShortcut) wouldn't re-run. This makes the master seed +
-         the root .lnk shortcut regenerate on EVERY Build AND every Debug/Run. -->
+    <!-- Force the master-seed post-build target to re-run on every Build AND every Debug/Run. -->
     <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
-    <!-- App/window icon = the NEX logo. Applied ONLY when app.ico exists so a fresh checkout without
-         the icon still builds (drop the NEX logo as LeontecSyncLogSystem/app.ico to enable it). -->
+    <!-- App/window icon = the NEX logo (only when app.ico exists so a fresh checkout still builds). -->
     <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Implicit usings the merged background-service classes expect (the Web SDK
-         provides these automatically; the WinForms SDK does not). -->
+    <!-- Implicit usings for the generic-host / DI / logging code (no Web SDK to provide them). -->
     <Using Include="Microsoft.Extensions.Logging" />
     <Using Include="Microsoft.Extensions.DependencyInjection" />
     <Using Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- In-process Kestrel web API (/api/sync, /api/status) inside the desktop app. -->
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
-
-    <!-- Bluetooth SPP server (RFCOMM) — accepts multiple device connections concurrently -->
+    <!-- Bluetooth SPP server (RFCOMM). On net48 this uses the Win32 stack (net462 lib). -->
     <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.2.1" />
 
-    <!-- EF Core 8 + MySQL (Pomelo). SQLite/SqlServer/Postgres removed — MySQL is the only DB now. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.13" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.13">
+    <!-- Generic Host + DI + Logging + Configuration (replaces the ASP.NET Core WebApplication host).
+         Pinned to 3.1.x so ALL Microsoft.Extensions.* line up with EF Core 3.1 (below). netstandard2.0
+         ⇒ runs on net48. The in-process HTTP monitoring API uses System.Net.HttpListener (built into
+         net48), not Kestrel. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="3.1.32" />
+
+    <!-- EF Core 3.1 is the LAST EF Core that supports .NET Framework. MySQL via Pomelo 3.2 (EF Core
+         3.1 line) + snake_case naming. SQLite/SqlServer/Postgres are not used. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="3.1.32" />
+    <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="3.2.7" />
+    <PackageReference Include="EFCore.NamingConventions" Version="1.1.0" />
+
+    <!-- Shift-JIS (cp932) for CSV export. net48 has it built in, but this package supplies
+         CodePagesEncodingProvider so MainForm's registration call compiles unchanged. -->
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="6.0.0" />
+
+    <!-- DateOnly/TimeOnly are .NET 6+ types; this backports them to net48 so the shared code compiles.
+         EF value converters (AppDbContext) map them to MySQL DATE/TIME. -->
+    <PackageReference Include="Portable.System.DateTimeOnly" Version="8.0.1" />
+
+    <!-- Compile-time polyfills so modern C# syntax (records, init, required, System.Index/Range)
+         compiles on net48 (generates IsExternalInit, RequiredMemberAttribute, Index, Range, …). -->
+    <PackageReference Include="PolySharp" Version="1.14.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="8.0.3" />
-    <!-- snake_case table/column naming (MySQL convention) -->
-    <PackageReference Include="EFCore.NamingConventions" Version="8.0.3" />
-    <PackageReference Include="System.Text.Encoding.CodePages" Version="10.0.9" />
   </ItemGroup>
 
   <ItemGroup>
@@ -68,22 +79,17 @@
     <None Update="sample-logs.csv">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <!-- Seed copies of the two master CSVs (taken from the Android app's assets). Copied next to
-         the exe so MasterStore can seed <root>/_master on first run. -->
+    <!-- Seed copies of the two master CSVs (from the Android app's assets), next to the exe. -->
     <None Update="master-seed\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <!-- NEX logo icon (optional; see ApplicationIcon above). Copied next to the exe so MainForm can
-         also set it as the window icon at runtime. -->
+    <!-- NEX logo icon (optional). -->
     <None Update="app.ico" Condition="Exists('app.ico')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 
-  <!-- Seed the two master CSVs into <root>/_master (sibling of the app folder) on EVERY build, so a
-       freshly-built layout always has the masters present without opening the app. $(OutDir) is
-       bin/<Config>/LogManagement/, so $(OutDir)..\_master resolves to bin/<Config>/_master.
-       SkipUnchangedFiles=false ⇒ re-copied every build (overwrites), as requested. -->
+  <!-- Seed the two master CSVs into <root>/_master (sibling of the app folder) on every build. -->
   <Target Name="CopyMasterSeedToRoot" AfterTargets="Build">
     <ItemGroup>
       <_MasterSeedCsv Include="master-seed\*.csv" />
@@ -94,21 +100,6 @@
           SkipUnchangedFiles="false"
           OverwriteReadOnlyFiles="true" />
     <Message Importance="high" Text="Seeded master CSVs → $(OutDir)..\_master (@(_MasterSeedCsv->'%(Filename)%(Extension)', ', '))" />
-  </Target>
-
-  <!-- Create a .lnk shortcut to the exe in <root> (parent of the app folder), so the tool can be
-       launched without opening the LogManagement folder. Re-created on every build. The target path
-       is absolute, but WScript.Shell also stores the relative path (shortcut + exe share the tree),
-       so the shortcut still resolves if the whole <root> folder is moved/copied elsewhere. -->
-  <Target Name="CreateRootShortcut" AfterTargets="Build">
-    <PropertyGroup>
-      <_ExeFull>$([System.IO.Path]::GetFullPath('$(OutDir)LeontecSyncLogSystem.exe'))</_ExeFull>
-      <_RootFull>$([System.IO.Path]::GetFullPath('$(OutDir)..'))</_RootFull>
-      <_WorkDir>$([System.IO.Path]::GetFullPath('$(OutDir)'))</_WorkDir>
-      <_LnkPath>$(_RootFull)\Log Management.lnk</_LnkPath>
-    </PropertyGroup>
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut('$(_LnkPath)'); $sc.TargetPath = '$(_ExeFull)'; $sc.WorkingDirectory = '$(_WorkDir)'; $sc.IconLocation = '$(_ExeFull),0'; $sc.Description = 'Leontec Log Management'; $sc.Save()&quot;" />
-    <Message Importance="high" Text="Created shortcut → $(_LnkPath)" />
   </Target>
 
 </Project>

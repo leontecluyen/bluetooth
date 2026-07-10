@@ -113,20 +113,32 @@ namespace LeontecSyncLogSystem.Services
                     // Resend with the SAME index = REPLACE: drop any prior upload of the same
                     // (term, type, index) so the day view shows one copy, not a duplicate. The phone
                     // re-sends a backup file under its original name precisely to overwrite the old one.
-                    await db.CsvUploads
+                    // (EF Core 3.1 has no ExecuteDelete; load + RemoveRange, cascades via DB FK.)
+                    var toReplace = await db.CsvUploads
                         .Where(u => u.TermId == upload.TermId
                                     && u.Type == upload.Type
                                     && u.UploadIndex == upload.UploadIndex
                                     && u.Id != upload.Id)
-                        .ExecuteDeleteAsync(token); // cascades to typed tables
+                        .ToListAsync(token);
+                    if (toReplace.Count > 0)
+                    {
+                        db.CsvUploads.RemoveRange(toReplace); // cascades to typed tables (ON DELETE CASCADE)
+                        await db.SaveChangesAsync(token);
+                    }
 
                     // Mark older uploads (lower index) of the same terminal + type as superseded.
-                    await db.CsvUploads
+                    // (EF Core 3.1 has no ExecuteUpdate; load the rows, flip the flag, save.)
+                    var toSupersede = await db.CsvUploads
                         .Where(u => u.TermId == upload.TermId
                                     && u.Type == upload.Type
                                     && u.UploadIndex < upload.UploadIndex
                                     && !u.Superseded)
-                        .ExecuteUpdateAsync(s => s.SetProperty(u => u.Superseded, true), token);
+                        .ToListAsync(token);
+                    if (toSupersede.Count > 0)
+                    {
+                        foreach (var u in toSupersede) u.Superseded = true;
+                        await db.SaveChangesAsync(token);
+                    }
                 }
             }
             catch (Exception ex)
@@ -193,7 +205,9 @@ namespace LeontecSyncLogSystem.Services
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            await db.CsvUploads.ExecuteDeleteAsync(token); // cascades to typed tables
+            // EF Core 3.1 has no ExecuteDelete; a raw DELETE clears the table and cascades to the typed
+            // tables via their ON DELETE CASCADE FKs (snake_case table name).
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM `csv_uploads`", token);
         }
     }
 }
