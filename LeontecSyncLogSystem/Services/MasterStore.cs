@@ -22,8 +22,9 @@ namespace LeontecSyncLogSystem.Services
     /// Owns the two editable master CSVs (customer + item) that the PC is the source of truth for.
     /// Files live under <c>&lt;root&gt;/{customer,item}_master.csv</c> (default
     /// <c>%LOCALAPPDATA%/LeontecSyncLogSystem/master</c>). On first run each missing file is seeded
-    /// from the copy bundled next to the exe (<c>master-seed/</c>, taken from the Android app's
-    /// assets), so the operator starts from the same data the app shipped with.
+    /// from the copy bundled next to the exe (<c>master-seed/</c>), which the build links straight
+    /// from the Android app's assets (<c>shipment_support/.../assets</c>) — the single source of
+    /// truth for both masters — so the operator starts from the exact data the phone ships with.
     ///
     /// Stored as UTF-8 (no BOM) to match the phone's asset files exactly, so a later reverse-sync
     /// (Giai đoạn 2) can stream the bytes unchanged. A <see cref="Version"/> (SHA-256 over both

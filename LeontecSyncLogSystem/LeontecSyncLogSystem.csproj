@@ -31,6 +31,11 @@
     <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
     <!-- App/window icon = the NEX logo (only when app.ico exists so a fresh checkout still builds). -->
     <ApplicationIcon Condition="Exists('app.ico')">app.ico</ApplicationIcon>
+    <!-- SINGLE SOURCE OF TRUTH for the two master CSVs = the Android app's assets folder.
+         The PC seeds from here (both the runtime bundle and <root>/_master) on every Build AND
+         every Debug/Run, so the PC tool and the phone can never drift apart. There is no longer a
+         separate master-seed/ copy in this project — edit the masters in shipment_support's assets. -->
+    <MasterAssetsDir>$(MSBuildProjectDirectory)\..\shipment_support\app\src\main\assets</MasterAssetsDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -76,8 +81,15 @@
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <!-- Seed copies of the two master CSVs (from the Android app's assets), next to the exe. -->
-    <None Update="master-seed\**\*">
+    <!-- Runtime first-run seed bundle next to the exe (MasterStore._seedRoot = <exe>\master-seed).
+         Linked straight from the Android assets (single source of truth) and materialized under
+         master-seed\ in the output — a link, not a maintained copy, so it can never drift. -->
+    <None Include="$(MasterAssetsDir)\customer_master.csv">
+      <Link>master-seed\customer_master.csv</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="$(MasterAssetsDir)\item_master.csv">
+      <Link>master-seed\item_master.csv</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <!-- NEX logo icon (optional). -->
@@ -86,14 +98,16 @@
     </None>
   </ItemGroup>
 
-  <!-- Seed the two master CSVs into <root>/_master (sibling of the app folder) on every build. -->
+  <!-- Seed the two master CSVs into <root>/_master (sibling of the app folder) on every build, taken
+       straight from the Android assets (single source of truth). Overwrites so a Build/Debug always
+       re-pulls the latest master from assets and re-syncs the running tool's data folder. -->
   <Target Name="CopyMasterSeedToRoot" AfterTargets="Build">
     <ItemGroup>
-      <_MasterSeedCsv Include="master-seed\*.csv" />
+      <_MasterSeedCsv Include="$(MasterAssetsDir)\customer_master.csv;$(MasterAssetsDir)\item_master.csv" />
     </ItemGroup>
     <MakeDir Directories="$(OutDir)..\_master" />
     <Copy SourceFiles="@(_MasterSeedCsv)" DestinationFolder="$(OutDir)..\_master" SkipUnchangedFiles="false" OverwriteReadOnlyFiles="true" />
-    <Message Importance="high" Text="Seeded master CSVs → $(OutDir)..\_master (@(_MasterSeedCsv->'%(Filename)%(Extension)', ', '))" />
+    <Message Importance="high" Text="Seeded master CSVs from assets → $(OutDir)..\_master (@(_MasterSeedCsv->'%(Filename)%(Extension)', ', '))" />
   </Target>
 
 </Project>

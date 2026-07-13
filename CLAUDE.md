@@ -37,7 +37,8 @@ LeontecSyncLogSystem/
     MySqlConfig.cs        reads <root>/mysql.xml (host/port/db/user/pass) → connection string + status
     CsvBackupWriter.cs    writes a raw copy of each received CSV to disk (backup, best-effort)
     MasterStore.cs        PC-owned source of truth for the 2 master CSVs (customer/item): load/save
-                          (UTF-8 no BOM) + first-run seed from master-seed/ + SHA-256 Version()
+                          (UTF-8 no BOM) + first-run seed from the exe-side master-seed/ bundle
+                          (linked from the Android assets — see below) + SHA-256 Version()
     FrameDecoder.cs       STX/ETX byte framing (pure, testable)
     BluetoothSppServer.cs  32feet.NET RFCOMM SPP server, multi-client accept loop
     HttpApiService.cs     IHostedService HTTP monitoring API via System.Net.HttpListener (net48; no Kestrel)
@@ -72,7 +73,13 @@ The exe folder is named **`LogManagement`** (not the raw TFM): the csproj sets
 the exe sits in `bin/<Config>/LogManagement/` and `_master`/`_backup`/`mysql.xml` land in
 `bin/<Config>/` — the same relative shape as a deployed layout. Missing config files/data folders are
 created with defaults on first run. **The two master CSVs are copied into `<root>/_master`** by the
-`CopyMasterSeedToRoot` MSBuild target (source: `master-seed/`, overwrite) and a **`Log Management.lnk`
+`CopyMasterSeedToRoot` MSBuild target — **source = the Android app's assets folder**
+(`../shipment_support/app/src/main/assets/{customer,item}_master.csv`, via the `$(MasterAssetsDir)`
+property; overwrite so every Build/Debug re-pulls the latest master from assets). **The Android assets
+are the single source of truth for both master CSVs** — there is no separate `master-seed/` copy in
+the PC project anymore; the exe-side `master-seed/` bundle (runtime `MasterStore` seed root) is
+`<None Include>`-linked straight from those same asset files, so PC and phone can't drift. Edit the
+masters in `shipment_support/.../assets` only. A **`Log Management.lnk`
 shortcut** to the exe is (re)created in `<root>` by the `CreateRootShortcut` target (PowerShell +
 WScript.Shell) so the tool launches without entering `LogManagement/` (it stores a relative path too,
 so it survives moving the whole `<root>` folder). Both targets are `AfterTargets="Build"` and run on
