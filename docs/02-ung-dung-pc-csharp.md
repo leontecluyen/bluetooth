@@ -311,11 +311,14 @@ MySQL bên ngoài quản lý.
     **Margin ô mặc định 3px** đẩy xuống; còn `_grpLogs` phải `Dock Fill` thẳng trong `Panel2` (Panel bỏ
     qua Margin) → trước đây cao hơn trái đúng 3px. Đã đặt **`_split.Panel2.Padding = new Padding(3)`** để
     thụt group box phải 3px đều bốn phía → mép trên hai bên trùng khít (đo pixel: cùng một `y`).
-  - **Nút "Xuất CSV" (CSV出力)** nằm **bên phải bộ lọc** (`_btnExportDay`, neo phải — chỉ còn 1 nút
-    này, nút Export trên thanh công cụ đã bỏ). **Xuất ĐÚNG bảng đang hiển thị**: serialize thẳng
-    `DataTable` mà `_dgvLogs` đang bind (cùng type+ngày, cùng bộ lọc, **cùng cột `#`**, cùng thứ tự
-    dòng) ra `.csv` (UTF-8 BOM) qua `SaveFileDialog`. Bảng được dựng **một chỗ** ở
-    `RefreshDayLogAsync` → sửa cách dựng bảng thì cả lưới lẫn file xuất đổi theo, không lệch nhau.
+  - **Nút "Xuất CSV" (CSV出力)** nằm **bên phải bộ lọc** (`_btnExportDay`, neo phải). **Xuất ĐÚNG bảng
+    đang hiển thị**: serialize thẳng `DataTable` mà `_dgvLogs` đang bind (cùng type+ngày, cùng bộ lọc,
+    **cùng cột `#`**, cùng thứ tự dòng) ra `.csv` (UTF-8 BOM) qua `SaveFileDialog`. Bảng được dựng
+    **một chỗ** ở `RefreshDayLogAsync` → sửa cách dựng bảng thì cả lưới lẫn file xuất đổi theo, không
+    lệch nhau.
+  - **Nút "Refresh" (更新)** nằm **ngay bên trái nút Xuất CSV** (`_btnRefreshDay`, neo phải). Làm mới
+    bảng log **ngay lập tức** theo yêu cầu (reset `_dayLogSig = ""` rồi gọi `RefreshAsync`) thay vì đợi
+    timer 2s. **Luôn hiển thị** (không có công tắc ẩn/hiện trong `configuration.xml`).
   - Header hiện tên radio + trạng thái lắng nghe; thời gian đổi UTC→giờ địa phương; ô **Hiện
     diện** xanh `● Online` khi còn heartbeat trong 15s, xám `○ Offline` khi quá hạn.
   - **Đa ngôn ngữ:** mọi nhãn/cột/thông báo lấy qua `UI/Localization.cs` (`Loc.T(key)`) — **EN /
@@ -324,16 +327,17 @@ MySQL bên ngoài quản lý.
     locale Windows** (ja → tiếng Nhật, còn lại → English); lựa chọn được lưu ở
     `ui-language.txt` **trong thư mục app** (giá trị `Vi` cũ nếu còn sót sẽ không
     parse được và tự rơi về dò theo locale).
-  - **Thanh công cụ:** nút **"Reset"** (đỏ) + **"Mở thư mục backup"** + nhãn trạng thái/uptime/tổng +
-    **nhãn trạng thái MySQL** (`● connected` xanh / `× disconnected` đỏ, do `MonitorService.IsDbConnectedAsync`
-    kiểm tra mỗi 2s khi được bật) + combo ngôn ngữ.
+  - **Thanh công cụ:** nút **"Reset"** (đỏ) + nhãn trạng thái/uptime/tổng + **nhãn trạng thái MySQL**
+    (`● connected` xanh / `× disconnected` đỏ, do `MonitorService.IsDbConnectedAsync` kiểm tra mỗi 2s
+    khi được bật) + combo ngôn ngữ + (**ngoài cùng bên phải**) nút **"Mở thư mục backup"**.
   - **Ngôn ngữ theo config:** `app/configuration.xml` có `<language>` (**mặc định `ja`**; `ja`/`en`) là
     **nguồn chân lý** — áp lúc khởi động qua `Loc.SetLanguage` (đè dò-OS / `ui-language.txt`); đổi bằng
     combo lúc chạy thì **ghi ngược lại config** để config luôn là nguồn duy nhất.
-  - **Ẩn/hiện theo `app/configuration.xml` (`UI/UiConfig.cs`, mặc định ẩn HẾT):** 7 công tắc —
+  - **Ẩn/hiện theo `app/configuration.xml` (`UI/UiConfig.cs`, mặc định ẩn HẾT — TRỪ
+    `showOpenBackupButton` mặc định `true`, thiếu thẻ ⇒ hiện):** 7 công tắc —
     `showResetButton`, `showOpenBackupButton`, `showLanguageButton`, `showMasterButtons` (2 nút master),
     `showBluetoothPanel` (panel1 trái-trên), `showCsvPanel` (panel2 trái-dưới), `showMysqlStatus`
-    (nhãn MySQL). Khi tất cả = false thì **cả cột trái thu gọn**, chỉ còn bảng log bên phải.
+    (nhãn MySQL). Khi các công tắc panel = false thì **cả cột trái thu gọn**, chỉ còn bảng log bên phải.
     `MainForm.ApplyUiConfig()` áp một lần lúc khởi động.
   - **Icon** cửa sổ/taskbar = **logo NEX** (`app.ico` cạnh exe; `ApplicationIcon` trong csproj +
     `MainForm.TryLoadAppIcon` lúc chạy — không có file thì bỏ qua, không lỗi).

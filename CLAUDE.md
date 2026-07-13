@@ -82,7 +82,8 @@ so it survives moving the whole `<root>` folder). Both targets are `AfterTargets
 **UI config (`app/configuration.xml`, `UI/UiConfig.cs`).** A `<language>` element (**default `ja`**;
 `ja`/`en`) is the **authoritative UI language** — applied at startup via `Loc.SetLanguage` (overrides
 OS detection / `ui-language.txt`); a runtime change from the language combo is written back here so
-the config stays the single source. Plus seven show/hide toggles, **all default `false` (hidden)**:
+the config stays the single source. Plus seven show/hide toggles, **all default `false` (hidden)
+EXCEPT `showOpenBackupButton` which defaults `true`** (missing element ⇒ shown):
 `showResetButton`, `showOpenBackupButton`, `showLanguageButton`, `showMasterButtons` (the 2 master
 buttons), `showBluetoothPanel` (top-left panel), `showCsvPanel` (bottom-left panel), `showMysqlStatus`
 (toolbar MySQL-status label). With every toggle false the left column collapses entirely and only the
@@ -161,11 +162,14 @@ CSV log types (canonical headers — keep Android writer + PC parser in sync):
 `Superseded=true`. The per-day right panel aggregates ALL uploads of the day (incl. superseded) then
 applies the display filter above. Columns come from the CSV's own row 1 (dynamic per type). An
 **Export CSV** button (right of the day-log filter) writes the currently-shown (filtered) day-log to a
-file — it serializes the exact `DataTable` the grid is bound to, so grid and file never drift. The
-left-bottom CSV list is also filtered by the date picker (by filename date `LogDate`). The toolbar is
-a red **Reset** button (= `ClearAllAsync`), an **Open backup folder** button (`OpenBackupFolder` →
-opens `ICsvBackupWriter.Root` in Explorer), status labels (incl. a **MySQL connection-status** label
-driven by `MonitorService.IsDbConnectedAsync`), and the language combo. **Every one of these toolbar
+file — it serializes the exact `DataTable` the grid is bound to, so grid and file never drift. A
+**Refresh** button (`btn_refresh`, immediately left of Export) force-reloads the day-log now (resets
+`_dayLogSig` then calls `RefreshAsync`) instead of waiting for the 2s timer; it is always visible (no
+config toggle). The left-bottom CSV list is also filtered by the date picker (by filename date
+`LogDate`). The toolbar is a red **Reset** button (= `ClearAllAsync`), status labels (incl. a **MySQL
+connection-status** label driven by `MonitorService.IsDbConnectedAsync`), the language combo, and — on
+the far right — an **Open backup folder** button (`OpenBackupFolder` → opens `ICsvBackupWriter.Root` in
+Explorer; shown by default). **Every one of these toolbar
 buttons/labels + both left panels + the master buttons is individually shown/hidden by
 `configuration.xml` (all default hidden)** — see the on-disk-layout section above. The grid
 auto-refreshes every 2s. Toolbar totals ("Logs today | Total") count `SUM(CsvUploads.RowCount)` of

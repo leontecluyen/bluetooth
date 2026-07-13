@@ -110,6 +110,13 @@ namespace LeontecSyncLogSystem
 
             _btnClear.Click += async (_, _) => await ClearAllAsync();
             _btnOpenBackup.Click += (_, _) => OpenBackupFolder();
+            // Force-refresh the day-log grid now (bypass the cached signature so it always re-renders),
+            // and refresh the left CSV list too — same work the 2s timer does, but on demand.
+            _btnRefreshDay.Click += async (_, _) =>
+            {
+                _dayLogSig = "";
+                await RefreshAsync();
+            };
             _btnExportDay.Click += async (_, _) => await ExportCsvAsync();
             _btnPrevDay.Click += (_, _) => StepDay(-1);
             _btnNextDay.Click += (_, _) => StepDay(+1);
@@ -215,6 +222,7 @@ namespace LeontecSyncLogSystem
         {
             _btnClear.Text = Loc.T("btn_clear");
             _btnOpenBackup.Text = Loc.T("btn_open_backup");
+            _btnRefreshDay.Text = Loc.T("btn_refresh");
             _btnExportDay.Text = Loc.T("btn_export");
 
             _btnMasterCustomer.Text = Loc.T("btn_master_customer");

@@ -6,15 +6,16 @@ namespace LeontecSyncLogSystem.UI
     /// <summary>
     /// Show/hide toggles for the dashboard, read from <c>configuration.xml</c> (see
     /// <see cref="Services.AppPaths.AppConfigPath"/>). <b>Every toggle defaults to <c>false</c>
-    /// (hidden)</b> — a fresh install shows only the day-log table on the right; the operator opts
-    /// each piece back in by editing the file.
+    /// (hidden) EXCEPT <c>showOpenBackupButton</c>, which defaults to <c>true</c></b> — a fresh
+    /// install shows the day-log table on the right plus the "Open backup folder" button; the
+    /// operator opts each other piece back in by editing the file.
     ///
     /// <para>File shape (toggles optional, missing ⇒ false; <c>language</c> defaults to <c>ja</c>):</para>
     /// <code>
     /// &lt;configuration&gt;
     ///   &lt;language&gt;ja&lt;/language&gt;
     ///   &lt;showResetButton&gt;false&lt;/showResetButton&gt;
-    ///   &lt;showOpenBackupButton&gt;false&lt;/showOpenBackupButton&gt;
+    ///   &lt;showOpenBackupButton&gt;true&lt;/showOpenBackupButton&gt;
     ///   &lt;showLanguageButton&gt;false&lt;/showLanguageButton&gt;
     ///   &lt;showMasterButtons&gt;false&lt;/showMasterButtons&gt;
     ///   &lt;showBluetoothPanel&gt;false&lt;/showBluetoothPanel&gt;
@@ -39,8 +40,9 @@ namespace LeontecSyncLogSystem.UI
         /// <summary>Toolbar "Reset" button (clears all data).</summary>
         public bool ShowResetButton { get; set; }
 
-        /// <summary>Toolbar "Open backup folder" button.</summary>
-        public bool ShowOpenBackupButton { get; set; }
+        /// <summary>Toolbar "Open backup folder" button. <b>Defaults to <c>true</c></b> (the one
+        /// toggle shown by default) — a missing element in the config also reads as <c>true</c>.</summary>
+        public bool ShowOpenBackupButton { get; set; } = true;
 
         /// <summary>Toolbar language combo box.</summary>
         public bool ShowLanguageButton { get; set; }
@@ -81,7 +83,8 @@ namespace LeontecSyncLogSystem.UI
                 {
                     Language = ReadStr(root, "language", "ja"),
                     ShowResetButton = Read(root, "showResetButton"),
-                    ShowOpenBackupButton = Read(root, "showOpenBackupButton"),
+                    // Open-backup is the one toggle that defaults to true (missing element ⇒ shown).
+                    ShowOpenBackupButton = Read(root, "showOpenBackupButton", true),
                     ShowLanguageButton = Read(root, "showLanguageButton"),
                     ShowMasterButtons = Read(root, "showMasterButtons"),
                     ShowBluetoothPanel = Read(root, "showBluetoothPanel"),
@@ -119,10 +122,12 @@ namespace LeontecSyncLogSystem.UI
                 .Save(path);
         }
 
-        private static bool Read(XElement? root, string name)
+        private static bool Read(XElement? root, string name, bool fallback = false)
         {
             var e = root?.Element(name);
-            return e is not null && bool.TryParse(e.Value.Trim(), out var v) && v;
+            if (e is null || !bool.TryParse(e.Value.Trim(), out var v))
+                return fallback;
+            return v;
         }
 
         private static string ReadStr(XElement? root, string name, string fallback)

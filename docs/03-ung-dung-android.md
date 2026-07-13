@@ -98,8 +98,18 @@ shipment_support). Chỉ nhớ **PC mục tiêu**:
 
 ## 3.5. Kho 送信済 & index — `BackupStore`
 
-Kho "đã gửi" trên đĩa nội bộ app: `filesDir/backup/{yyyyMMdd}/`. Mỗi lần gửi **THÀNH CÔNG** ghi 1
-bản sao CSV vào đây với **đúng tên đã gửi lên PC** `{type}_{yyyyMMdd}_{term}_{index}.txt`.
+Kho "đã gửi" đặt **ngay trong folder log người dùng chọn** (chỗ chứa các file CSV theo ngày), thư
+mục con `backup/{yyyyMMdd}/`: tức `<folder người dùng chọn>/backup/{yyyyMMdd}/`. Mỗi lần gửi
+**THÀNH CÔNG** ghi 1 bản sao CSV vào đây với **đúng tên đã gửi lên PC**
+`{type}_{yyyyMMdd}_{term}_{index}.txt`. `BackupStore` phân giải folder giống `DayLogRepository`/
+`FileLogHelper` — hỗ trợ **cả** đường dẫn File thường (`/storage/emulated/0/…`) **và** SAF
+`content://…` (dùng `DocumentFile`); folder mặc định (chưa chọn) = `…/ShipmentSupport/backup/`.
+(Trước đây backup nằm ở bộ nhớ nội bộ app `filesDir/backup/{date}/` — đã chuyển ra folder log ngày
+để backup nằm cạnh file CSV gốc.)
+
+> **Danh sách 未送信 KHÔNG hiện thư mục `backup/`.** `DayLogRepository.unsentForDay` chỉ dò đúng 3
+> tên file cố định (`monitor_log_/pallet_log_/direct_log_<date>.txt`), không liệt kê toàn bộ folder,
+> nên thư mục con `backup/` không bao giờ xuất hiện trong danh sách CSV cần gửi.
 
 - **`nextIndex(type,date)` = `1 + max(index của type trong backup/{date}/)`** — liệt kê file của
   ngày, tách cụm số index ở cuối tên (regex `^([a-zA-Z]+_log)_(\d{8})_.+_(\d+)$`), lấy max rồi +1.

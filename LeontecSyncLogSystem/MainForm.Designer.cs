@@ -59,6 +59,7 @@ namespace LeontecSyncLogSystem
         private RadioButton _rbMonitor;
         private RadioButton _rbPallet;
         private RadioButton _rbDirect;
+        private Button _btnRefreshDay;        // 更新 — force-refresh the day-log grid on demand
         private Button _btnExportDay;         // CSV出力 — exports exactly what the grid shows
         private DataGridView _dgvLogs;
 
@@ -113,6 +114,7 @@ namespace LeontecSyncLogSystem
             _rbMonitor = new RadioButton();
             _rbPallet = new RadioButton();
             _rbDirect = new RadioButton();
+            _btnRefreshDay = new Button();
             _btnExportDay = new Button();
             _dgvLogs = new DataGridView();
             _grpMaster = new GroupBox();
@@ -163,7 +165,7 @@ namespace LeontecSyncLogSystem
             // baselines). Every control is AutoSize'd and anchored so the grid centres it vertically:
             // buttons, status labels and the combo now line up on ONE baseline. Spacing = per-control
             // left Margin only (no Padding offsets). Column 5 is a flexible gap that pushes the
-            // language combo to the right edge.
+            // language combo and the Open-backup button to the right edge (Open-backup is rightmost).
             _bar.Dock = DockStyle.Fill;
             _bar.Margin = new Padding(0);
             _bar.Padding = new Padding(4, 0, 4, 0);
@@ -171,20 +173,20 @@ namespace LeontecSyncLogSystem
             _bar.RowCount = 1;
             _bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 0 Reset
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 1 Open backup
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 2 Conn
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 3 Uptime
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 4 Totals
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 5 MySQL status
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); // 6 flexible gap
-            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 7 Language combo
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 1 Conn
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 2 Uptime
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 3 Totals
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 4 MySQL status
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); // 5 flexible gap
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 6 Language combo
+            _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));   // 7 Open backup (far right)
             _bar.Controls.Add(_btnClear, 0, 0);
-            _bar.Controls.Add(_btnOpenBackup, 1, 0);
-            _bar.Controls.Add(_lblConn, 2, 0);
-            _bar.Controls.Add(_lblUptime, 3, 0);
-            _bar.Controls.Add(_lblTotals, 4, 0);
-            _bar.Controls.Add(_lblMysql, 5, 0);
-            _bar.Controls.Add(_cmbLang, 7, 0);
+            _bar.Controls.Add(_lblConn, 1, 0);
+            _bar.Controls.Add(_lblUptime, 2, 0);
+            _bar.Controls.Add(_lblTotals, 3, 0);
+            _bar.Controls.Add(_lblMysql, 4, 0);
+            _bar.Controls.Add(_cmbLang, 6, 0);
+            _bar.Controls.Add(_btnOpenBackup, 7, 0);
 
             _btnClear.Anchor = AnchorStyles.Left;
             _btnClear.AutoSize = true;
@@ -192,9 +194,9 @@ namespace LeontecSyncLogSystem
             _btnClear.ForeColor = Color.Firebrick;
             _btnClear.Text = "Reset";
 
-            _btnOpenBackup.Anchor = AnchorStyles.Left;
+            _btnOpenBackup.Anchor = AnchorStyles.Right;
             _btnOpenBackup.AutoSize = true;
-            _btnOpenBackup.Margin = new Padding(8, 0, 0, 0);
+            _btnOpenBackup.Margin = new Padding(8, 0, 2, 0);
             _btnOpenBackup.Text = "Open backup folder";
 
             _lblConn.Anchor = AnchorStyles.Left;
@@ -338,15 +340,16 @@ namespace LeontecSyncLogSystem
             // _filterRow — a single-row grid so every control lines up on one baseline. Each control
             // is AutoSize'd and anchored (Left for the filter group, Right for Export); the grid
             // centres them vertically, so there are NO hand-tuned top-padding offsets to keep in sync.
-            // Columns: [date lbl][‹][picker][›] · [type lbl][monitor][pallet][direct] · [flex gap][Export]
+            // Columns: [date lbl][‹][picker][›] · [type lbl][monitor][pallet][direct] · [flex gap][Refresh][Export]
             _filterRow.Dock = DockStyle.Fill;
             _filterRow.Margin = new Padding(0);
-            _filterRow.ColumnCount = 10;
+            _filterRow.ColumnCount = 11;
             _filterRow.RowCount = 1;
             _filterRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             for (int i = 0; i < 8; i++)
                 _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); // flexible gap
+            _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // Refresh button
             _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // Export button
             _filterRow.Controls.Add(_lblDate, 0, 0);
             _filterRow.Controls.Add(_btnPrevDay, 1, 0);
@@ -356,7 +359,8 @@ namespace LeontecSyncLogSystem
             _filterRow.Controls.Add(_rbMonitor, 5, 0);
             _filterRow.Controls.Add(_rbPallet, 6, 0);
             _filterRow.Controls.Add(_rbDirect, 7, 0);
-            _filterRow.Controls.Add(_btnExportDay, 9, 0);
+            _filterRow.Controls.Add(_btnRefreshDay, 9, 0);
+            _filterRow.Controls.Add(_btnExportDay, 10, 0);
 
             _lblDate.Anchor = AnchorStyles.Left;
             _lblDate.AutoSize = true;
@@ -400,6 +404,15 @@ namespace LeontecSyncLogSystem
             _rbDirect.AutoSize = true;
             _rbDirect.Margin = new Padding(0, 0, 12, 0);
             _rbDirect.Text = "Direct";
+
+            // _btnRefreshDay — sits just left of Export; force-reloads the day-log grid on demand
+            // (the grid also auto-refreshes every 2s, but this lets the operator pull immediately).
+            _btnRefreshDay.Anchor = AnchorStyles.Right;
+            _btnRefreshDay.AutoSize = true;
+            _btnRefreshDay.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _btnRefreshDay.Padding = new Padding(8, 3, 8, 3);
+            _btnRefreshDay.Margin = new Padding(6, 0, 6, 0);
+            _btnRefreshDay.Text = "Refresh";
 
             // _btnExportDay — pinned to the right edge; exports exactly the rows/columns shown below.
             _btnExportDay.Anchor = AnchorStyles.Right;
