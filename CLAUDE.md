@@ -153,10 +153,17 @@ CSV log types (canonical headers — keep Android writer + PC parser in sync):
   whose header matches none of the three types is stored as `Type = "unknown"` with only its `RawCsv`.)
 
 **Per-type display filter (right panel, `MonitorService.ApplyDisplayFilter`):**
-- monitor: hide rows with `状態 == 9`; show the rest.
+- monitor: a `状態 == 9` (削除) row **cancels** the earlier `状態 == 0` (正常) row with the same
+  `入出庫伝票番号` (Android writes the delete row keeping every field, only `状態` flips — see
+  `StockViewModel.deleteSelectedStock`). Hide **both** the delete row **and** the original it cancels;
+  each 削除 row cancels exactly one 正常 row (oldest first). Show whatever survives. Applies to the
+  grid **and** Export CSV (both read the filtered `DataTable`).
 - direct: show all.
-- pallet: key = (`PLNo.`, `顧客`, `納入便`); hide `状態 == 9`; among surviving rows (状態 0/1) of the
-  same key show only the one with the **latest `終了時刻`**.
+- pallet: key = (`PLNo.`, `顧客`, `納入便`). A `状態 == 9` (削除) means the whole pallet was **deleted
+  from the DB** (`ShippingActivity.performDeletePallet` removes the pallet + its invoices) → hide
+  **every** row of that key (the 削除 row **and** its 正常/移動 rows), so a deleted pallet vanishes
+  entirely from the grid **and** Export CSV. Among surviving rows (状態 0/1) of a **non-deleted** key
+  show only the one with the **latest `終了時刻`**.
 
 **Supersede:** a newer `index` for the same `(termId, type)` marks older `CsvUploads`
 `Superseded=true`. The per-day right panel aggregates ALL uploads of the day (incl. superseded) then

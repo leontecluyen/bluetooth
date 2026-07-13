@@ -295,8 +295,10 @@ MySQL bên ngoài quản lý.
     (`StepDay(±1)`) lùi/tiến 1 ngày, nút **›** **bị vô hiệu khi đã ở hôm nay** (`UpdateDateNav` chạy
     mỗi `ValueChanged`). `RefreshDayLogAsync` → `MonitorService.GetDayLogAsync(typeKey, date)` → gộp
     **mọi** upload của type đó trong ngày (`LogDate`, fallback `ReceivedAtUtc`), rồi `ApplyDisplayFilter`
-    lọc theo type (monitor ẩn 状態=9; direct hiện hết; pallet dedup key PLNo.+顧客+納入便, ẩn 9, giữ
-    終了時刻 mới nhất). Cột **`#`** + **tô màu dòng trùng** (`DupPalette`); cột lưới **kéo dài tới mép
+    lọc theo type (monitor: dòng 状態=9 削除 hủy dòng 状態=0 正常 cùng 入出庫伝票番号 — ẩn CẢ dòng xóa
+    LẪN dòng gốc bị hủy, mỗi dòng 9 hủy đúng 1 dòng 0 cũ nhất; direct hiện hết; pallet dedup key
+    PLNo.+顧客+納入便: khóa có dòng 削除(9) thì ẩn TOÀN BỘ dòng của khóa (pallet đã xóa biến mất hẳn),
+    khóa còn lại giữ dòng 終了時刻 mới nhất trong các dòng 0/1). Cột **`#`** + **tô màu dòng trùng** (`DupPalette`); cột lưới **kéo dài tới mép
     phải** (`AutoSizeColumnsMode = Fill`) với **tỉ lệ % theo từng cột** (`ApplyLogColumnWeights` gán
     `FillWeight` theo header — 品目明細 rộng, #/状態 hẹp; chạy lại mỗi lần `DataBindingComplete` vì cột
     auto-generate). Né nhấp nháy bằng chữ ký `_dayLogSig`.

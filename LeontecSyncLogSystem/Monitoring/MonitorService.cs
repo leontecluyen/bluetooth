@@ -198,9 +198,13 @@ namespace LeontecSyncLogSystem.Monitoring
         /// <summary>
         /// Apply the per-type "what to show" rules to the aggregated rows (columns located by their
         /// row-1 header so this survives column reordering):
-        ///  • <b>monitor</b>: hide 状態 = 9 (削除); show the rest (状態 = 0 正常).
-        ///  • <b>pallet</b>: key = (PLNo., 顧客, 納入便). Hide 状態 = 9; among the surviving rows
-        ///    (状態 0/1) of the same key, keep only the one with the latest 終了時刻.
+        ///  • <b>monitor</b>: a 状態 = 9 (削除) row cancels the earlier 状態 = 0 (正常) row with the
+        ///    same 入出庫伝票番号 (Android writes the delete row keeping every field, only 状態 flips →
+        ///    match by invoiceNo). Hide BOTH the delete row AND the original row it cancels; each 削除
+        ///    row cancels exactly one 正常 row (oldest first). Show whatever survives.
+        ///  • <b>pallet</b>: key = (PLNo., 顧客, 納入便). A 状態 = 9 (削除) means the whole pallet was
+        ///    deleted from the DB → hide EVERY row of that key (the 削除 row AND its 正常/移動 rows).
+        ///    Among the surviving rows (状態 0/1) of a non-deleted key, keep only the latest 終了時刻.
         ///  • <b>direct</b> / others: show everything (no 状態 column).
         /// </summary>
         private static void ApplyDisplayFilter(string typeKey, CsvTableDto dto)
@@ -212,21 +216,64 @@ namespace LeontecSyncLogSystem.Monitoring
             {
                 case "monitor_log":
                 {
-                    int st = Idx("状態");
+                    // Một dòng 状態=9 (削除) là bản ghi "hủy" dòng 状態=0 (正常) cùng 入出庫伝票番号 đã ghi
+                    // trước đó — Android ghi dòng xóa giữ nguyên mọi field, chỉ đổi 状態 (xem
+                    // StockViewModel.deleteSelectedStock) → ghép theo invoiceNo. Ẩn CẢ dòng xóa LẪN dòng
+                    // gốc bị nó hủy; mỗi dòng 9 hủy đúng 1 dòng 0 (cũ nhất trước). Áp cho cả list lẫn Export.
+                    int st = Idx("状態"), inv = Idx("入出庫伝票番号");
                     if (st < 0) return;
-                    dto.Rows = dto.Rows.Where(r => Cell(r, st) != "9").ToList();
+                    if (inv < 0)
+                    {
+                        // Không định vị được khóa ghép → giữ hành vi cũ: chỉ ẩn dòng 削除.
+                        dto.Rows = dto.Rows.Where(r => Cell(r, st) != "9").ToList();
+                        break;
+                    }
+                    // Pha 1: đếm số dòng xóa (状態=9) theo 入出庫伝票番号 (đếm trước nên thứ tự 0/9 không ảnh hưởng).
+                    var pendingDeletes = new Dictionary<string, int>();
+                    foreach (var r in dto.Rows)
+                    {
+                        if (Cell(r, st) != "9") continue;
+                        var key = Cell(r, inv);
+                        pendingDeletes[key] = pendingDeletes.TryGetValue(key, out var c) ? c + 1 : 1;
+                    }
+                    // Pha 2: bỏ mọi dòng 削除; với mỗi invoiceNo còn "nợ" xóa, bỏ dòng 正常 cũ nhất tương ứng.
+                    var kept = new List<string[]>(dto.Rows.Count);
+                    foreach (var r in dto.Rows)
+                    {
+                        if (Cell(r, st) == "9") continue;                    // dòng xóa: luôn ẩn
+                        var key = Cell(r, inv);
+                        if (Cell(r, st) == "0" && pendingDeletes.TryGetValue(key, out var c) && c > 0)
+                        {
+                            pendingDeletes[key] = c - 1;                     // dòng gốc bị 1 dòng xóa hủy → ẩn
+                            continue;
+                        }
+                        kept.Add(r);
+                    }
+                    dto.Rows = kept;
                     break;
                 }
                 case "pallet_log":
                 {
                     int st = Idx("状態"), pl = Idx("PLNo."), cu = Idx("顧客"), ru = Idx("納入便"), en = Idx("終了時刻");
                     if (st < 0 || pl < 0 || cu < 0 || ru < 0) return;
+                    string KeyOf(string[] r) => $"{Cell(r, pl)}|{Cell(r, cu)}|{Cell(r, ru)}";
+
+                    // Một dòng 状態=9 (削除) nghĩa là CẢ pallet (khóa PLNo.+顧客+納入便) đã bị xóa khỏi DB
+                    // (ShippingActivity.performDeletePallet xóa pallet + invoices). Khác monitor (hủy theo
+                    // từng dòng invoiceNo), pallet có nhiều dòng/khóa theo vòng đời (積込 0 / 移動 1) nên hủy
+                    // theo KHÓA: khóa nào có 削除 thì ẩn TOÀN BỘ dòng của nó (cả 削除 lẫn 正常/移動) → pallet
+                    // đã xóa biến mất hoàn toàn khỏi list + Export.
+                    var deletedKeys = new HashSet<string>();
+                    foreach (var r in dto.Rows)
+                        if (Cell(r, st) == "9") deletedKeys.Add(KeyOf(r));
+
                     var kept = new Dictionary<string, string[]>();
                     var order = new List<string>();
                     foreach (var r in dto.Rows)
                     {
                         if (Cell(r, st) == "9") continue;                 // 削除 → hide
-                        var key = $"{Cell(r, pl)}|{Cell(r, cu)}|{Cell(r, ru)}";
+                        var key = KeyOf(r);
+                        if (deletedKeys.Contains(key)) continue;          // pallet đã bị xóa → ẩn luôn 正常/移動
                         if (!kept.TryGetValue(key, out var cur)) { kept[key] = r; order.Add(key); }
                         else if (string.CompareOrdinal(Cell(r, en), Cell(cur, en)) > 0) kept[key] = r; // newer 終了時刻 wins
                     }
