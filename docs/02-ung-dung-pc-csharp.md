@@ -88,7 +88,7 @@ LeontecSyncLogSystem/
   **DB tắt lúc khởi động KHÔNG làm app crash**: lỗi được log (Error) rồi app vẫn mở, dashboard hiện
   "MySQL: disconnected"; schema/roster nạp ở lần chạy sau khi MySQL đã lên. Sau khi tạo schema OK thì
   **nạp roster thiết bị** và `ServiceStatus.SeedFromPersisted(...)`.
-- Nạp `UiConfig` từ `app/configuration.xml` (7 công tắc ẩn/hiện, mặc định false) và đăng ký singleton;
+- Nạp `UiConfig` từ `app/configuration.xml` (8 công tắc ẩn/hiện, mặc định false) và đăng ký singleton;
   `MainForm.ApplyUiConfig()` áp lúc khởi động.
 - Đăng ký DI (đa số là **singleton** vì là trạng thái sống của tiến trình):
   - `ServiceStatus` — trạng thái BT toàn cục.
@@ -326,7 +326,8 @@ MySQL bên ngoài quản lý.
     lệch nhau.
   - **Nút "Refresh" (更新)** nằm **ngay bên trái nút Xuất CSV** (`_btnRefreshDay`, neo phải). Làm mới
     bảng log **ngay lập tức** theo yêu cầu (reset `_dayLogSig = ""` rồi gọi `RefreshAsync`) thay vì đợi
-    timer 2s. **Luôn hiển thị** (không có công tắc ẩn/hiện trong `configuration.xml`).
+    timer 2s. **Mặc định ẩn**, chỉ hiện khi `showRefreshButton = true` — vì lưới đã tự làm mới mỗi 2s
+    (file mới từ app Android tự xuất hiện trong ~2s) nên nút này dư thừa với vận hành bình thường.
   - Header hiện tên radio + trạng thái lắng nghe; thời gian đổi UTC→giờ địa phương; ô **Hiện
     diện** xanh `● Online` khi còn heartbeat trong 15s, xám `○ Offline` khi quá hạn.
   - **Đa ngôn ngữ:** mọi nhãn/cột/thông báo lấy qua `UI/Localization.cs` (`Loc.T(key)`) — **EN /
@@ -342,10 +343,11 @@ MySQL bên ngoài quản lý.
     **nguồn chân lý** — áp lúc khởi động qua `Loc.SetLanguage` (đè dò-OS / `ui-language.txt`); đổi bằng
     combo lúc chạy thì **ghi ngược lại config** để config luôn là nguồn duy nhất.
   - **Ẩn/hiện theo `app/configuration.xml` (`UI/UiConfig.cs`, mặc định ẩn HẾT — TRỪ
-    `showOpenBackupButton` mặc định `true`, thiếu thẻ ⇒ hiện):** 7 công tắc —
+    `showOpenBackupButton` mặc định `true`, thiếu thẻ ⇒ hiện):** 8 công tắc —
     `showResetButton`, `showOpenBackupButton`, `showLanguageButton`, `showMasterButtons` (2 nút master),
     `showBluetoothPanel` (panel1 trái-trên), `showCsvPanel` (panel2 trái-dưới), `showMysqlStatus`
-    (nhãn MySQL). Khi các công tắc panel = false thì **cả cột trái thu gọn**, chỉ còn bảng log bên phải.
+    (nhãn MySQL), `showRefreshButton` (nút Refresh của day-log, mặc định ẩn — lưới tự làm mới mỗi 2s).
+    Khi các công tắc panel = false thì **cả cột trái thu gọn**, chỉ còn bảng log bên phải.
     `MainForm.ApplyUiConfig()` áp một lần lúc khởi động.
   - **Icon** cửa sổ/taskbar = **logo NEX** (`app.ico` cạnh exe; `ApplicationIcon` trong csproj +
     `MainForm.TryLoadAppIcon` lúc chạy — không có file thì bỏ qua, không lỗi).

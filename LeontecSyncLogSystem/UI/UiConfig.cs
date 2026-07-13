@@ -21,6 +21,7 @@ namespace LeontecSyncLogSystem.UI
     ///   &lt;showBluetoothPanel&gt;false&lt;/showBluetoothPanel&gt;
     ///   &lt;showCsvPanel&gt;false&lt;/showCsvPanel&gt;
     ///   &lt;showMysqlStatus&gt;false&lt;/showMysqlStatus&gt;
+    ///   &lt;showRefreshButton&gt;false&lt;/showRefreshButton&gt;
     /// &lt;/configuration&gt;
     /// </code>
     /// </summary>
@@ -60,6 +61,13 @@ namespace LeontecSyncLogSystem.UI
         public bool ShowMysqlStatus { get; set; }
 
         /// <summary>
+        /// Day-log "Refresh" button (left of Export). <b>Defaults to <c>false</c> (hidden)</b>: the
+        /// grid already auto-reloads every 2 s, so a new upload appears on its own within ~2 s —
+        /// the button only forces an immediate reload and is redundant for normal use.
+        /// </summary>
+        public bool ShowRefreshButton { get; set; }
+
+        /// <summary>
         /// Load toggles from <paramref name="path"/>; if the file is missing, write a default
         /// (all-false) one and return it. Any error is logged and falls back to all-false, so the
         /// dashboard always opens.
@@ -90,11 +98,12 @@ namespace LeontecSyncLogSystem.UI
                     ShowBluetoothPanel = Read(root, "showBluetoothPanel"),
                     ShowCsvPanel = Read(root, "showCsvPanel"),
                     ShowMysqlStatus = Read(root, "showMysqlStatus"),
+                    ShowRefreshButton = Read(root, "showRefreshButton"),
                 };
                 logger.LogInformation(
-                    "Loaded UI config from {Path}: language={Lang} reset={R} backup={B} langBtn={L} master={M} bt={P1} csv={P2} mysql={S}.",
+                    "Loaded UI config from {Path}: language={Lang} reset={R} backup={B} langBtn={L} master={M} bt={P1} csv={P2} mysql={S} refresh={Rf}.",
                     path, cfg.Language, cfg.ShowResetButton, cfg.ShowOpenBackupButton, cfg.ShowLanguageButton,
-                    cfg.ShowMasterButtons, cfg.ShowBluetoothPanel, cfg.ShowCsvPanel, cfg.ShowMysqlStatus);
+                    cfg.ShowMasterButtons, cfg.ShowBluetoothPanel, cfg.ShowCsvPanel, cfg.ShowMysqlStatus, cfg.ShowRefreshButton);
                 return cfg;
             }
             catch (Exception ex)
@@ -118,7 +127,8 @@ namespace LeontecSyncLogSystem.UI
                 new XElement("showMasterButtons", ShowMasterButtons),
                 new XElement("showBluetoothPanel", ShowBluetoothPanel),
                 new XElement("showCsvPanel", ShowCsvPanel),
-                new XElement("showMysqlStatus", ShowMysqlStatus)))
+                new XElement("showMysqlStatus", ShowMysqlStatus),
+                new XElement("showRefreshButton", ShowRefreshButton)))
                 .Save(path);
         }
 

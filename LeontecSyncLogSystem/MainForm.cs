@@ -264,6 +264,8 @@ namespace LeontecSyncLogSystem
             _btnOpenBackup.Visible = _ui.ShowOpenBackupButton;
             _cmbLang.Visible = _ui.ShowLanguageButton;
             _lblMysql.Visible = _ui.ShowMysqlStatus;
+            // The day-log grid auto-reloads every 2s, so this on-demand button is hidden by default.
+            _btnRefreshDay.Visible = _ui.ShowRefreshButton;
 
             _btnMasterCustomer.Visible = _ui.ShowMasterButtons;
             _btnMasterItem.Visible = _ui.ShowMasterButtons;

@@ -184,11 +184,13 @@ PC nhận diện type từ **token đặc trưng trong row-1**; mỗi type có h
 
 ### `direct_log` (直送管理単位 — 11 cột, type MỚI)
 ```
-開始時刻,終了時刻,顧客,納入先,出荷日,品番,収容数,箱数,納入数,工場コード,ヨコオ品番
+開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番
 ```
 - 1 dòng = 1 lần 照合 hoàn tất; **không có cột `状態`**.
-→ chuẩn hóa thành **DirectEntries**.
-- **Hiển thị PC:** hiện **tất cả** các dòng.
+- Cột **`工場コード` nằm ngay sau `納入先`**. Android trích từ chuỗi QR ticket トヨタ (cắt **ký tự 23→30**,
+  vd `1000L324` — xem `DeliveryHelper.extractFactoryCode`); khách khác (林/内浜/デンソー) để **trống**.
+→ chuẩn hóa thành **DirectEntries** (PC đọc cột `工場コード` tại index 4).
+- **Hiển thị PC:** hiện **tất cả** các dòng (grid + Export đều kèm cột `工場コード`).
 
 ### `legacy` (định dạng quét cũ — **ĐÃ GỠ BỎ**)
 

@@ -35,8 +35,9 @@ namespace LeontecSyncLogSystem.Services
         public const string PalletHeader =
             "開始時刻,終了時刻,PLNo.,顧客,納入便,品目明細 (品目コード:箱数x数量),状態";
         // direct (直送管理単位, 11 cols): one row per completed 照合 (no 状態 column — always shown).
+        // 工場コード moved to right after 納入先 (Android extracts it from the トヨタ QR ticket, chars 23-30).
         public const string DirectHeader =
-            "開始時刻,終了時刻,顧客,納入先,出荷日,品番,収容数,箱数,納入数,工場コード,ヨコオ品番";
+            "開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番";
 
         public static string TypeKey(CsvType t) => t switch
         {
@@ -196,8 +197,9 @@ namespace LeontecSyncLogSystem.Services
         }
 
         /// <summary>
-        /// Parse the direct-delivery (直送管理単位) CSV body into entries. 11-col layout:
-        /// 開始時刻,終了時刻,顧客,納入先,出荷日,品番,収容数,箱数,納入数,工場コード,ヨコオ品番.
+        /// Parse the direct-delivery (直送管理単位) CSV body into entries. 11-col layout
+        /// (工場コード moved to right after 納入先):
+        /// 開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番.
         /// One row per completed 照合 (no 状態 column).
         /// </summary>
         public static List<DirectEntry> ParseDirect(string csv)
@@ -212,12 +214,12 @@ namespace LeontecSyncLogSystem.Services
                     EndTime = ToTime(f[1]),
                     Customer = f[2],
                     DeliveryTo = f[3],
-                    ShipDate = ToDate(f[4]),
-                    PartNo = f[5],
-                    Capacity = ToInt(f[6]),
-                    Boxes = ToInt(f[7]),
-                    DeliveryQty = ToInt(f[8]),
-                    FactoryCode = f[9],
+                    FactoryCode = f[4],
+                    ShipDate = ToDate(f[5]),
+                    PartNo = f[6],
+                    Capacity = ToInt(f[7]),
+                    Boxes = ToInt(f[8]),
+                    DeliveryQty = ToInt(f[9]),
                     YokooPartNo = f[10],
                 });
             }
