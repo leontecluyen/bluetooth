@@ -180,36 +180,20 @@ namespace LeontecSyncLogSystem.Monitoring
         /// </summary>
         public async Task<CsvTableDto> GetDayLogAsync(string typeKey, DateOnly date, CancellationToken token = default)
         {
-            var raws = await _csvStore.GetRawCsvsForDayAsync(typeKey, date, token);
-            var dto = new CsvTableDto();
-
-            // Columns are PINNED to the type's canonical DISPLAY header (see CanonicalHeaders), NOT
-            // taken from "whichever upload arrived first" nor from the phone's wire layout. Older builds
-            // shipped drifting monitor/pallet headers (8 vs 9 vs 10 cols, a duplicated 状態, an extra 操作
-            // col …); deriving the grid from the first upload made the visible columns — and therefore
-            // Export — jump between renders. The display header may also intentionally differ from the
-            // wire CSV (e.g. direct is uploaded 11-col but shown 10-col, 出荷日-first). Each upload's rows
-            // are re-projected onto the canonical columns BY HEADER NAME, so column reordering / extra /
-            // missing columns can't misalign data and the filter always reads the numeric 状態 code
-            // column (never a look-alike text column).
-            var canonical = CanonicalHeaders(typeKey);
-            if (canonical is not null)
+            // Build the day-log from the type's NORMALIZED DB table (monitor_entries / pallet_ops /
+            // direct_entries) — NOT the uploads' RawCsv — so rows deleted from those tables drop out of
+            // the grid AND Export. Each builder emits the type's PINNED canonical DISPLAY header (see
+            // MonitorHeaders/PalletHeaders/DirectHeaders): the columns/order are fixed regardless of the
+            // wire layout, and the display header may intentionally differ from it (direct is uploaded
+            // 11-col but shown 10-col, 出荷日-first). Unknown types have no normalized table → fall back
+            // to aggregating RawCsv.
+            CsvTableDto dto;
+            switch (typeKey)
             {
-                dto.Headers = canonical.ToList();
-                foreach (var raw in raws)
-                {
-                    if (string.IsNullOrWhiteSpace(raw)) continue;
-                    AppendCsvProjected(dto, raw, canonical);
-                }
-            }
-            else
-            {
-                // Unknown type (no canonical layout): fall back to "first upload sets the header".
-                foreach (var raw in raws)
-                {
-                    if (string.IsNullOrWhiteSpace(raw)) continue;
-                    AppendCsv(dto, raw);
-                }
+                case "monitor_log": dto = await BuildMonitorDtoAsync(date, token); break;
+                case "pallet_log":  dto = await BuildPalletDtoAsync(date, token); break;
+                case "direct_log":  dto = await BuildDirectDtoAsync(date, token); break;
+                default:            dto = await BuildUnknownDtoFromRawAsync(typeKey, date, token); break;
             }
 
             int rawRows = dto.Rows.Count;
@@ -228,8 +212,101 @@ namespace LeontecSyncLogSystem.Monitoring
             SortByEndTimeDesc(dto);
 
             _logger.LogDebug(
-                "Per-day log built: type={Type} date={Date:yyyy-MM-dd} → {Shown}/{Raw} rows from {Uploads} uploads (after display filter, sorted by 終了時刻 desc).",
-                typeKey, date.ToDateTime(TimeOnly.MinValue), dto.Rows.Count, rawRows, raws.Count);
+                "Per-day log built: type={Type} date={Date:yyyy-MM-dd} → {Shown}/{Rows} rows (from normalized DB table, after display filter, sorted by 終了時刻 desc).",
+                typeKey, date.ToDateTime(TimeOnly.MinValue), dto.Rows.Count, rawRows);
+            return dto;
+        }
+
+        /// <summary>
+        /// Build the モニタ (monitor) day-log for <paramref name="date"/> from the normalized
+        /// <c>monitor_entries</c> table, projected onto the pinned 8-col <see cref="MonitorHeaders"/>
+        /// (the trailing 状態 = the numeric <c>StatusCode</c> the display filter reads, then dropped).
+        /// Rows come in creation order so <see cref="ApplyDisplayFilter"/>'s 削除-cancels-earlier-正常
+        /// logic still holds.
+        /// </summary>
+        private async Task<CsvTableDto> BuildMonitorDtoAsync(DateOnly date, CancellationToken token)
+        {
+            var entries = await _csvStore.GetMonitorEntriesForDayAsync(date, token);
+            var dto = new CsvTableDto { Headers = MonitorHeaders.ToList() };
+            foreach (var e in entries)
+                dto.Rows.Add(new[]
+                {
+                    e.StartTime?.ToString("HH:mm:ss") ?? "",     // 開始時刻
+                    e.EndTime?.ToString("HH:mm:ss") ?? "",       // 終了時刻
+                    e.SlipNo,                                    // 入出庫伝票番号
+                    e.CustomerCode,                              // 顧客コード
+                    e.ItemCode,                                  // 品目コード
+                    e.Boxes.ToString(),                          // 箱数
+                    e.Quantity.ToString(),                       // 数量
+                    e.StatusCode,                                // 状態 (0/9 code; filter-only, dropped later)
+                });
+            return dto;
+        }
+
+        /// <summary>
+        /// Build the パレット (pallet) day-log for <paramref name="date"/> from the normalized
+        /// <c>pallet_ops</c> table, projected onto the pinned 7-col <see cref="PalletHeaders"/>. 品目明細
+        /// is the raw <c>ItemDetailRaw</c> string (blank once a 移動 emptied the pallet) and 状態 is the
+        /// numeric <c>StatusCode</c> — both read by <see cref="ApplyDisplayFilter"/>'s per-key latest-state
+        /// rule, then 状態 is dropped. Creation order preserved for that rule.
+        /// </summary>
+        private async Task<CsvTableDto> BuildPalletDtoAsync(DateOnly date, CancellationToken token)
+        {
+            var ops = await _csvStore.GetPalletOpsForDayAsync(date, token);
+            var dto = new CsvTableDto { Headers = PalletHeaders.ToList() };
+            foreach (var p in ops)
+                dto.Rows.Add(new[]
+                {
+                    p.StartTime?.ToString("HH:mm:ss") ?? "",     // 開始時刻
+                    p.EndTime?.ToString("HH:mm:ss") ?? "",       // 終了時刻
+                    p.PlNo,                                      // PLNo.
+                    p.Customer,                                  // 顧客
+                    p.DeliveryRun,                               // 納入便
+                    p.ItemDetailRaw,                             // 品目明細 (品目コード:箱数x数量)
+                    p.StatusCode,                                // 状態 (0/1/9 code; filter-only, dropped later)
+                });
+            return dto;
+        }
+
+        /// <summary>
+        /// Build the 直送 (direct) day-log for <paramref name="date"/> from the normalized
+        /// <c>direct_entries</c> table, projected onto the pinned 10-col <see cref="DirectHeaders"/>
+        /// (出荷日 first, no ヨコオ品番). direct has no 状態 and its display filter shows all rows.
+        /// </summary>
+        private async Task<CsvTableDto> BuildDirectDtoAsync(DateOnly date, CancellationToken token)
+        {
+            var entries = await _csvStore.GetDirectEntriesForDayAsync(date, token);
+            var dto = new CsvTableDto { Headers = DirectHeaders.ToList() };
+            foreach (var e in entries)
+                dto.Rows.Add(new[]
+                {
+                    e.ShipDate?.ToString("yyyy/MM/dd") ?? "",   // 出荷日
+                    e.StartTime?.ToString("HH:mm:ss") ?? "",     // 開始時刻
+                    e.EndTime?.ToString("HH:mm:ss") ?? "",       // 終了時刻
+                    e.Customer,                                  // 顧客
+                    e.DeliveryTo,                                // 納入先
+                    e.FactoryCode,                               // 工場コード
+                    e.PartNo,                                    // 品番
+                    e.Capacity.ToString(),                       // 収容数
+                    e.Boxes.ToString(),                          // 箱数
+                    e.DeliveryQty.ToString(),                    // 納入数
+                });
+            return dto;
+        }
+
+        /// <summary>
+        /// Fallback for an UNKNOWN type (no normalized table): aggregate each day's uploads' RawCsv, the
+        /// first upload's row-1 header setting the columns. Known types read their normalized tables.
+        /// </summary>
+        private async Task<CsvTableDto> BuildUnknownDtoFromRawAsync(string typeKey, DateOnly date, CancellationToken token)
+        {
+            var raws = await _csvStore.GetRawCsvsForDayAsync(typeKey, date, token);
+            var dto = new CsvTableDto();
+            foreach (var raw in raws)
+            {
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+                AppendCsv(dto, raw);
+            }
             return dto;
         }
 
@@ -418,28 +495,18 @@ namespace LeontecSyncLogSystem.Monitoring
             }
         }
 
-        // Canonical per-type day-log DISPLAY columns — the layout the dashboard grid + Export use,
-        // independent of whatever column order/count the phone actually uploaded. Each upload's rows
-        // are re-projected onto these columns BY HEADER NAME (AppendCsvProjected), so the wire CSV can
-        // stay 11-col for direct while the display shows the 10-col layout below (columns absent here,
-        // e.g. ヨコオ品番, are dropped; 出荷日 is pulled to the front regardless of its source position).
-        // Pinned so the grid + Export never drift with older/mismatched upload layouts. 状態
-        // (monitor/pallet) is the trailing numeric 0/9 code. Keep in sync with the display spec image.
-        //   monitor 8-col, pallet 7-col, direct 10-col.
+        // Canonical per-type day-log DISPLAY columns — the layout the dashboard grid + Export use, the
+        // header each Build*DtoAsync emits when projecting its normalized DB rows. Independent of the
+        // wire layout (direct stays 11-col on the wire but shows the 10-col layout below — ヨコオ品番
+        // dropped, 出荷日 first). Pinned so the grid + Export never drift. 状態 (monitor/pallet) is the
+        // trailing numeric 0/9/1 code — read by the display filter, then dropped from grid + Export.
+        // Keep in sync with the display spec image.  monitor 8-col, pallet 7-col, direct 10-col.
         private static readonly string[] MonitorHeaders =
             { "開始時刻", "終了時刻", "入出庫伝票番号", "顧客コード", "品目コード", "箱数", "数量", "状態" };
         private static readonly string[] PalletHeaders =
             { "開始時刻", "終了時刻", "PLNo.", "顧客", "納入便", "品目明細 (品目コード:箱数x数量)", "状態" };
         private static readonly string[] DirectHeaders =
             { "出荷日", "開始時刻", "終了時刻", "顧客", "納入先", "工場コード", "品番", "収容数", "箱数", "納入数" };
-
-        private static string[]? CanonicalHeaders(string typeKey) => typeKey switch
-        {
-            "monitor_log" => MonitorHeaders,
-            "pallet_log" => PalletHeaders,
-            "direct_log" => DirectHeaders,
-            _ => null,
-        };
 
         /// <summary>
         /// Parse one raw CSV and append its data rows to <paramref name="dto"/> PROJECTED onto the fixed

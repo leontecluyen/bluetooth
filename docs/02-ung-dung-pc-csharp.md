@@ -299,17 +299,24 @@ MySQL bên ngoài quản lý.
     **`direct`**). Bộ lọc ngày dạng **`データ日 ‹ [DateTimePicker] ›`**: `DateTimePicker` **mặc định
     hôm nay**, `MaxDate = DateTime.Today` nên **không chọn được ngày sau hôm nay**; hai nút **‹ / ›**
     (`StepDay(±1)`) lùi/tiến 1 ngày, nút **›** **bị vô hiệu khi đã ở hôm nay** (`UpdateDateNav` chạy
-    mỗi `ValueChanged`). `RefreshDayLogAsync` → `MonitorService.GetDayLogAsync(typeKey, date)` → gộp
-    **mọi** upload của type đó trong ngày (`LogDate`, fallback `ReceivedAtUtc`). **Cột được CHỐT theo
-    header HIỂN THỊ chuẩn của type** (`CanonicalHeaders`: monitor 8 cột / pallet 7 cột / **direct 10
-    cột**), **KHÔNG lấy theo CSV app gửi lên**. Header hiển thị có thể **cố ý khác** layout trên đường
-    truyền: direct **gửi lên vẫn 11 cột** (thứ tự cũ, có `ヨコオ品番`) nhưng **hiển thị + Export chỉ 10
-    cột theo đúng ảnh spec** — `出荷日` đưa lên **đầu**, bỏ cột `ヨコオ品番`:
-    `出荷日,開始時刻,終了時刻,顧客,納入先,工場コード,品番,収容数,箱数,納入数`. Mỗi upload được **chiếu dòng theo TÊN
-    cột** (`AppendCsvProjected`) nên cột thừa (`ヨコオ品番`) bị bỏ, `出荷日` được kéo lên đầu dù ở vị trí nào
-    trong CSV nguồn, và format cũ/lệch (thừa `積込箱数`, `状態` bị lặp text `〇 完了`+mã, thừa cột `操作`…)
-    không làm cột "lúc có lúc mất" và không lệch dữ liệu; `状態` lấy **cột `状態` cuối cùng** (mã 0/9). Nhờ
-    chốt cột, **Export cũng ổn định** (Export serialize đúng `DataTable` đang bind, **bỏ cột `#`**). Sau đó `ApplyDisplayFilter` lọc theo type,
+    mỗi `ValueChanged`). `RefreshDayLogAsync` → `MonitorService.GetDayLogAsync(typeKey, date)`.
+    **2026-07-14 — day-log đọc thẳng BẢNG CHUẨN HÓA trong DB, KHÔNG parse lại `RawCsv`:** `GetDayLogAsync`
+    switch theo type → `BuildMonitorDtoAsync` (`monitor_entries`) / `BuildPalletDtoAsync` (`pallet_ops`) /
+    `BuildDirectDtoAsync` (`direct_entries`); type **unknown** mới fallback `BuildUnknownDtoFromRawAsync`
+    (`RawCsv`). Các method `ICsvStore.Get{Monitor,PalletOps,Direct}…ForDayAsync` join bảng typed →
+    `csv_uploads`, lọc theo `LogDate` (fallback `ReceivedAtUtc`) như cũ và **order theo `ReceivedAtUtc`
+    rồi `Id` = thứ tự tạo** (để `ApplyDisplayFilter` 削除/latest-state vẫn đúng). **Lợi ích:** xóa dòng trực
+    tiếp trong `monitor_entries`/`pallet_ops`/`direct_entries` (MySQL) là lưới + Export **giảm theo** —
+    trước đây đọc `RawCsv` nên xóa trong DB không có tác dụng. **Cột được CHỐT theo header HIỂN THỊ chuẩn
+    của type** (mỗi builder phát header cố định: monitor 8 cột / pallet 7 cột / **direct 10 cột**),
+    **KHÔNG lấy theo CSV app gửi lên**. Header hiển thị có thể **cố ý khác** layout trên đường truyền:
+    direct **gửi lên vẫn 11 cột** (thứ tự cũ, có `ヨコオ品番`) nhưng **hiển thị + Export chỉ 10 cột theo đúng
+    ảnh spec** — `出荷日` đưa lên **đầu**, bỏ cột `ヨコオ品番`:
+    `出荷日,開始時刻,終了時刻,顧客,納入先,工場コード,品番,収容数,箱数,納入数`. `状態` (monitor/pallet) = mã số
+    `StatusCode` (0/9/1) đọc để lọc rồi bỏ. **Lưu ý:** giá trị lấy từ bản chuẩn hóa — ô số trống → `0`,
+    giờ → `HH:mm:ss`, `出荷日` → `yyyy/MM/dd`. `CanonicalHeaders` đã bỏ (dead sau refactor);
+    `AppendCsvProjected` giữ lại (còn dùng cho 補給データ出力). **Export serialize đúng `DataTable` đang bind,
+    bỏ cột `#`**. Sau đó `ApplyDisplayFilter` lọc theo type,
     **duyệt theo thứ tự log stream** (thứ tự nhận upload → thứ tự dòng = thứ tự tạo); 削除/移動 chỉ đè cái
     tạo **trước** nó:
     - monitor: dòng `状態=9` (削除) hủy dòng `状態=0` (正常) cùng `入出庫伝票番号` **gần nhất TẠO TRƯỚC** nó

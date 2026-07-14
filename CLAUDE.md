@@ -104,7 +104,15 @@ monitor)**, NOT by the CSV selected on the left. `MonitorService.GetDayLogAsync(
 aggregates the rows of **all** uploads of that type whose `LogDate` matches the day (rows from
 multiple uploads concatenated; identical rows colour-coded). The
 day comes from each upload's filename date (`CsvUpload.LogDate`; legacy uploads without a date fall
-back to the received-local date). **Columns are PINNED to the type's canonical DISPLAY header**
+back to the received-local date). **All 3 day-logs read their NORMALIZED DB table, not RawCsv
+(2026-07-14):** `GetDayLogAsync` switches on type → `BuildMonitorDtoAsync` (`monitor_entries`) /
+`BuildPalletDtoAsync` (`pallet_ops`) / `BuildDirectDtoAsync` (`direct_entries`); an **unknown** type
+falls back to `BuildUnknownDtoFromRawAsync` (RawCsv). The `ICsvStore.Get{Monitor,PalletOps,Direct}…
+ForDayAsync` methods join the typed table → `csv_uploads` for the same `LogDate` filter and order by
+`ReceivedAtUtc` then `Id` (= creation order, so the display filter's 削除/latest-state rules still hold).
+So rows deleted directly from those tables drop out of the grid **and** Export. `補給データ出力` is
+unaffected — it still re-reads `RawCsv` for `収容数`/`ヨコオ品番`, so it is NOT shrunk by trimming
+`direct_entries`. **Columns are PINNED to the type's canonical DISPLAY header**
 (`MonitorService.CanonicalHeaders`: monitor 8-col, pallet 7-col, **direct 10-col**), **NOT derived
 from the uploaded CSV** nor from "whichever upload arrived first". The display header may
 **intentionally differ from the phone's wire layout**: direct is **uploaded 11-col** (old order, with
