@@ -183,6 +183,12 @@ CSV log types (canonical headers — keep Android writer + PC parser in sync):
   (The old `legacy` scan format — header `id`/`LogId`, table `SyncLogs` — has been **removed**. A CSV
   whose header matches none of the three types is stored as `Type = "unknown"` with only its `RawCsv`.)
 
+**Display sort (all 3 types).** After the per-type filter below (and after `状態` is dropped), the day
+log rows are sorted by **`終了時刻` (completion time) DESCENDING** — newest-completed first —
+(`MonitorService.SortByEndTimeDesc`, stable; blank/unparseable times sort last). The grid binds these
+rows in order and Export serialises the same table, so **grid + Export CSV + 補給データ出力 all share this
+ordering** (the supply export sorts its トヨタ rows by `終了時刻` desc before projecting to its 5 columns).
+
 **Per-type display filter (right panel, `MonitorService.ApplyDisplayFilter`).** Rows are walked in
 **log-stream order** (upload-received order → in-file row order = **creation order**); a delete/move
 only ever supersedes something created **before** it (never after):

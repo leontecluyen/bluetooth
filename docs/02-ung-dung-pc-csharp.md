@@ -326,6 +326,10 @@ MySQL bên ngoài quản lý.
     để `AppendCsvProjected` + `ApplyDisplayFilter` đọc mã số, nhưng `GetDayLogAsync` gọi
     `RemoveColumn(dto, "状態")` **sau khi lọc** ⇒ `状態` không xuất hiện ở **cả lưới lẫn Export**. Cột
     hiển thị/xuất thực tế: **monitor 7 cột, pallet 6 cột** (bỏ `状態`), direct 10 cột (vốn không có `状態`).
+    **Sắp xếp (cả 3 loại):** sau khi lọc (và sau khi bỏ `状態`), các dòng được **sắp theo `終了時刻` (giờ
+    hoàn thành) GIẢM DẦN** — mới hoàn thành nhất lên đầu (`MonitorService.SortByEndTimeDesc`, ổn định;
+    giờ rỗng/không parse được xếp cuối). Lưới bind theo thứ tự này và Export serialize đúng bảng đó ⇒
+    **lưới + Export CSV + 補給データ出力 dùng chung thứ tự** (supply sắp トヨタ theo `終了時刻` desc trước khi chiếu 5 cột).
     Cột **`#`** + **tô màu dòng trùng** (`DupPalette`); **header cột căn GIỮA** (`ConfigureGrid` đặt
     `ColumnHeadersDefaultCellStyle.Alignment = MiddleCenter` cho mọi lưới); cột lưới **kéo dài tới mép
     phải** (`AutoSizeColumnsMode = Fill`) với **tỉ lệ % theo từng cột** (`ApplyLogColumnWeights` gán

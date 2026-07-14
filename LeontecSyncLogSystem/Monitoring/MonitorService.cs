@@ -222,11 +222,35 @@ namespace LeontecSyncLogSystem.Monitoring
             if (typeKey == "monitor_log" || typeKey == "pallet_log")
                 RemoveColumn(dto, "状態");
 
+            // Finally sort the (filtered) rows by 終了時刻 (completion time) DESCENDING — newest-completed
+            // first — for all 3 types. The day-log grid binds these rows in order, and Export serialises
+            // the same bound table, so grid + Export share this ordering. No-op if 終了時刻 is absent.
+            SortByEndTimeDesc(dto);
+
             _logger.LogDebug(
-                "Per-day log built: type={Type} date={Date:yyyy-MM-dd} → {Shown}/{Raw} rows from {Uploads} uploads (after display filter).",
+                "Per-day log built: type={Type} date={Date:yyyy-MM-dd} → {Shown}/{Raw} rows from {Uploads} uploads (after display filter, sorted by 終了時刻 desc).",
                 typeKey, date.ToDateTime(TimeOnly.MinValue), dto.Rows.Count, rawRows, raws.Count);
             return dto;
         }
+
+        /// <summary>
+        /// Sort <paramref name="dto"/>'s rows by the <c>終了時刻</c> (completion time) column DESCENDING —
+        /// newest-completed first. Stable (<see cref="Enumerable.OrderByDescending{TSource,TKey}"/>) so
+        /// rows with an equal (or missing) time keep their prior creation order. No-op when the column is
+        /// absent (e.g. an unknown-type log). Blank/unparseable times sort last.
+        /// </summary>
+        private static void SortByEndTimeDesc(CsvTableDto dto)
+        {
+            int idx = dto.Headers.FindIndex(h => h.Trim() == "終了時刻");
+            if (idx < 0) return;
+            dto.Rows = dto.Rows
+                .OrderByDescending(r => EndTimeKey(idx < r.Length ? r[idx] : ""))
+                .ToList();
+        }
+
+        /// <summary>Parse a <c>終了時刻</c> cell to a sortable <see cref="TimeSpan"/>; blank/invalid → MinValue (sorts last in desc).</summary>
+        private static TimeSpan EndTimeKey(string cell)
+            => TimeSpan.TryParse((cell ?? "").Trim(), out var t) ? t : TimeSpan.MinValue;
 
         /// <summary>
         /// Build the 直送 (direct) "supply" export (補給データ出力) for one <paramref name="date"/>: aggregate
@@ -241,9 +265,10 @@ namespace LeontecSyncLogSystem.Monitoring
         {
             var raws = await _csvStore.GetRawCsvsForDayAsync("direct_log", date, token);
 
-            // Pull the source columns we need BY HEADER NAME — 顧客 (Toyota filter) plus 収容数 / ヨコオ品番
-            // which the 10-col display layout omits. AppendCsvProjected tolerates column reordering.
-            var srcCols = new[] { "顧客", "出荷日", "品番", "収容数", "工場コード", "ヨコオ品番" };
+            // Pull the source columns we need BY HEADER NAME — 顧客 (Toyota filter), 終了時刻 (sort key)
+            // plus 収容数 / ヨコオ品番 which the 10-col display layout omits. AppendCsvProjected tolerates
+            // column reordering.
+            var srcCols = new[] { "顧客", "出荷日", "品番", "収容数", "工場コード", "ヨコオ品番", "終了時刻" };
             var src = new CsvTableDto { Headers = srcCols.ToList() };
             foreach (var raw in raws)
             {
@@ -255,14 +280,16 @@ namespace LeontecSyncLogSystem.Monitoring
             {
                 Headers = new List<string> { "出荷日", "品番", "収容数(数量)", "工場コード", "ヨコオ品番" },
             };
-            const int cust = 0, ship = 1, part = 2, cap = 3, fac = 4, yoko = 5;
+            const int cust = 0, ship = 1, part = 2, cap = 3, fac = 4, yoko = 5, end = 6;
             static string At(string[] r, int i) => (i >= 0 && i < r.Length) ? r[i].Trim() : "";
 
-            int toyota = 0;
-            foreach (var r in src.Rows)
+            // Toyota only, sorted by 終了時刻 (completion time) DESCENDING — same ordering as the day-log.
+            var toyotaRows = src.Rows
+                .Where(r => At(r, cust) == "トヨタ")
+                .OrderByDescending(r => EndTimeKey(At(r, end)))
+                .ToList();
+            foreach (var r in toyotaRows)
             {
-                if (At(r, cust) != "トヨタ") continue;   // Toyota only
-                toyota++;
                 dto.Rows.Add(new[]
                 {
                     At(r, ship),                       // 出荷日
@@ -274,8 +301,8 @@ namespace LeontecSyncLogSystem.Monitoring
             }
 
             _logger.LogInformation(
-                "Supply export built: date={Date:yyyy-MM-dd} → {Toyota}/{Total} トヨタ rows from {Uploads} direct uploads.",
-                date.ToDateTime(TimeOnly.MinValue), toyota, src.Rows.Count, raws.Count);
+                "Supply export built: date={Date:yyyy-MM-dd} → {Toyota}/{Total} トヨタ rows from {Uploads} direct uploads (sorted by 終了時刻 desc).",
+                date.ToDateTime(TimeOnly.MinValue), toyotaRows.Count, src.Rows.Count, raws.Count);
             return dto;
         }
 
