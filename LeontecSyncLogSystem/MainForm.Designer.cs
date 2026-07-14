@@ -61,6 +61,7 @@ namespace LeontecSyncLogSystem
         private RadioButton _rbDirect;
         private Button _btnRefreshDay;        // 更新 — force-refresh the day-log grid on demand
         private Button _btnExportDay;         // CSV出力 — exports exactly what the grid shows
+        private Button _btnSupplyExport;      // 補給データ出力 — Toyota-only 5-col supply export (direct radio only)
         private DataGridView _dgvLogs;
 
         // Master edit panel (right side; shown instead of the day log when a master is open).
@@ -116,6 +117,7 @@ namespace LeontecSyncLogSystem
             _rbDirect = new RadioButton();
             _btnRefreshDay = new Button();
             _btnExportDay = new Button();
+            _btnSupplyExport = new Button();
             _dgvLogs = new DataGridView();
             _grpMaster = new GroupBox();
             _masterLayout = new TableLayoutPanel();
@@ -340,16 +342,17 @@ namespace LeontecSyncLogSystem
             // _filterRow — a single-row grid so every control lines up on one baseline. Each control
             // is AutoSize'd and anchored (Left for the filter group, Right for Export); the grid
             // centres them vertically, so there are NO hand-tuned top-padding offsets to keep in sync.
-            // Columns: [date lbl][‹][picker][›] · [type lbl][monitor][pallet][direct] · [flex gap][Refresh][Export]
+            // Columns: [date lbl][‹][picker][›] · [type lbl][monitor][pallet][direct] · [flex gap][Refresh][SupplyExport][Export]
             _filterRow.Dock = DockStyle.Fill;
             _filterRow.Margin = new Padding(0);
-            _filterRow.ColumnCount = 11;
+            _filterRow.ColumnCount = 12;
             _filterRow.RowCount = 1;
             _filterRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             for (int i = 0; i < 8; i++)
                 _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); // flexible gap
             _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // Refresh button
+            _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // Supply-export button (direct only)
             _filterRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // Export button
             _filterRow.Controls.Add(_lblDate, 0, 0);
             _filterRow.Controls.Add(_btnPrevDay, 1, 0);
@@ -360,7 +363,8 @@ namespace LeontecSyncLogSystem
             _filterRow.Controls.Add(_rbPallet, 6, 0);
             _filterRow.Controls.Add(_rbDirect, 7, 0);
             _filterRow.Controls.Add(_btnRefreshDay, 9, 0);
-            _filterRow.Controls.Add(_btnExportDay, 10, 0);
+            _filterRow.Controls.Add(_btnSupplyExport, 10, 0);
+            _filterRow.Controls.Add(_btnExportDay, 11, 0);
 
             _lblDate.Anchor = AnchorStyles.Left;
             _lblDate.AutoSize = true;
@@ -421,6 +425,16 @@ namespace LeontecSyncLogSystem
             _btnExportDay.Padding = new Padding(8, 3, 8, 3);
             _btnExportDay.Margin = new Padding(6, 0, 2, 0);
             _btnExportDay.Text = "Export CSV";
+
+            // _btnSupplyExport — just left of Export; visible ONLY on the direct radio. Exports the
+            // Toyota-only 5-column supply layout (see MainForm.ExportSupplyCsvAsync). Hidden by default.
+            _btnSupplyExport.Anchor = AnchorStyles.Right;
+            _btnSupplyExport.AutoSize = true;
+            _btnSupplyExport.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _btnSupplyExport.Padding = new Padding(8, 3, 8, 3);
+            _btnSupplyExport.Margin = new Padding(6, 0, 2, 0);
+            _btnSupplyExport.Visible = false;
+            _btnSupplyExport.Text = "補給データ出力";
 
             ConfigureGrid(_dgvLogs);
             _dgvLogs.AutoGenerateColumns = true;
@@ -563,6 +577,8 @@ namespace LeontecSyncLogSystem
             grid.BorderStyle = BorderStyle.None;
             grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+            // Centre every column header's text within its column (data cells keep their own alignment).
+            grid.ColumnHeadersDefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
         }
     }
 }

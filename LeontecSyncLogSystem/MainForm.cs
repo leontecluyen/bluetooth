@@ -118,6 +118,7 @@ namespace LeontecSyncLogSystem
                 await RefreshAsync();
             };
             _btnExportDay.Click += async (_, _) => await ExportCsvAsync();
+            _btnSupplyExport.Click += async (_, _) => await ExportSupplyCsvAsync();
             _btnPrevDay.Click += (_, _) => StepDay(-1);
             _btnNextDay.Click += (_, _) => StepDay(+1);
 
@@ -224,6 +225,7 @@ namespace LeontecSyncLogSystem
             _btnOpenBackup.Text = Loc.T("btn_open_backup");
             _btnRefreshDay.Text = Loc.T("btn_refresh");
             _btnExportDay.Text = Loc.T("btn_export");
+            _btnSupplyExport.Text = Loc.T("btn_supply_export");
 
             _btnMasterCustomer.Text = Loc.T("btn_master_customer");
             _btnMasterItem.Text = Loc.T("btn_master_item");
@@ -266,6 +268,8 @@ namespace LeontecSyncLogSystem
             _lblMysql.Visible = _ui.ShowMysqlStatus;
             // The day-log grid auto-reloads every 2s, so this on-demand button is hidden by default.
             _btnRefreshDay.Visible = _ui.ShowRefreshButton;
+            // 補給データ出力 shows only on the direct radio (monitor is the startup default → hidden here).
+            _btnSupplyExport.Visible = _rbDirect.Checked;
 
             _btnMasterCustomer.Visible = _ui.ShowMasterButtons;
             _btnMasterItem.Visible = _ui.ShowMasterButtons;
@@ -492,6 +496,58 @@ namespace LeontecSyncLogSystem
             }
         }
 
+        /// <summary>
+        /// Export the 直送 (direct) "supply" CSV — a specialised export shown ONLY on the direct radio
+        /// (補給データ出力). Unlike the normal Export (which serialises the grid), this asks
+        /// <see cref="MonitorService.GetDirectSupplyExportAsync"/> for the day's direct rows filtered to
+        /// トヨタ, projected onto the fixed 5-column supply layout
+        /// (出荷日, 品番, 収容数(数量), 工場コード, ヨコオ品番) with 工場コード remapped (T3→A6 / L3→A9 / else blank).
+        /// It reads the raw upload, so it still sees ヨコオ品番 / 収容数 that the grid's 10-col display drops.
+        /// There is no "#" ordinal column here. SJIS-encoded so Excel on Japanese Windows opens it.
+        /// </summary>
+        private async Task ExportSupplyCsvAsync()
+        {
+            var date = DateOnly.FromDateTime(_dtpDay.Value.Date);
+
+            CsvTableDto table;
+            try { table = await _monitor.GetDirectSupplyExportAsync(date); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(Loc.T("export_error", ex.Message), Loc.T("error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (table.Rows.Count == 0)
+            {
+                MessageBox.Show(Loc.T("export_empty"), Loc.T("done"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using var dlg = new SaveFileDialog
+            {
+                Filter = "CSV (*.csv)|*.csv",
+                FileName = $"supply_{date:yyyyMMdd}.csv",
+            };
+            if (dlg.ShowDialog() != DialogResult.OK) return;
+
+            try
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append(string.Join(",", table.Headers.Select(CsvEscape))).Append("\r\n");
+                foreach (var r in table.Rows)
+                    sb.Append(string.Join(",", r.Select(CsvEscape))).Append("\r\n");
+
+                var exportText = sb.ToString();
+                await Task.Run(() => File.WriteAllText(dlg.FileName, exportText, ShiftJis));
+                MessageBox.Show(Loc.T("export_done", table.Rows.Count.ToString("N0"), dlg.FileName),
+                    Loc.T("done"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(Loc.T("export_error", ex.Message), Loc.T("error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
         private static string CsvEscape(string s)
         {
             s ??= "";
@@ -591,6 +647,8 @@ namespace LeontecSyncLogSystem
         {
             _dayLogSig = "";   // force a rebind even if the row count happens to match
             _csvSig = "";      // the bottom-left CSV list is date-filtered too → force it to rebind
+            // 補給データ出力 is a direct-only export → only show it on the direct radio.
+            _btnSupplyExport.Visible = _rbDirect.Checked;
             _ = RefreshDayLogAsync();
             _ = RefreshCsvListAsync();
         }
@@ -716,6 +774,14 @@ namespace LeontecSyncLogSystem
                 foreach (var ri in kv.Value) _rowColors[ri] = color;
             }
 
+            // Rebind cleanly: with AutoGenerateColumns, a DataGridView RETAINS the old DisplayIndex of
+            // any auto-generated column whose DataPropertyName matches one from the previous binding.
+            // monitor & pallet share a 状態 column (also 開始/終了時刻): after pallet (状態 at index 7) the
+            // 状態 column keeps index 7 when we rebind monitor, bumping monitor's 数量 to index 8 → the
+            // last two columns appear SWAPPED. Dropping the DataSource + clearing the columns forces a
+            // fresh regeneration in DataTable order, so columns always match the header we built.
+            _dgvLogs.DataSource = null;
+            _dgvLogs.Columns.Clear();
             _dgvLogs.DataSource = dt;
 
             var dupRows = _rowColors.Count;

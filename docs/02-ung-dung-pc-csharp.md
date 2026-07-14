@@ -300,14 +300,42 @@ MySQL bên ngoài quản lý.
     hôm nay**, `MaxDate = DateTime.Today` nên **không chọn được ngày sau hôm nay**; hai nút **‹ / ›**
     (`StepDay(±1)`) lùi/tiến 1 ngày, nút **›** **bị vô hiệu khi đã ở hôm nay** (`UpdateDateNav` chạy
     mỗi `ValueChanged`). `RefreshDayLogAsync` → `MonitorService.GetDayLogAsync(typeKey, date)` → gộp
-    **mọi** upload của type đó trong ngày (`LogDate`, fallback `ReceivedAtUtc`), rồi `ApplyDisplayFilter`
-    lọc theo type (monitor: dòng 状態=9 削除 hủy dòng 状態=0 正常 cùng 入出庫伝票番号 — ẩn CẢ dòng xóa
-    LẪN dòng gốc bị hủy, mỗi dòng 9 hủy đúng 1 dòng 0 cũ nhất; direct hiện hết; pallet dedup key
-    PLNo.+顧客+納入便: khóa có dòng 削除(9) thì ẩn TOÀN BỘ dòng của khóa (pallet đã xóa biến mất hẳn),
-    khóa còn lại giữ dòng 終了時刻 mới nhất trong các dòng 0/1). Cột **`#`** + **tô màu dòng trùng** (`DupPalette`); cột lưới **kéo dài tới mép
+    **mọi** upload của type đó trong ngày (`LogDate`, fallback `ReceivedAtUtc`). **Cột được CHỐT theo
+    header HIỂN THỊ chuẩn của type** (`CanonicalHeaders`: monitor 8 cột / pallet 7 cột / **direct 10
+    cột**), **KHÔNG lấy theo CSV app gửi lên**. Header hiển thị có thể **cố ý khác** layout trên đường
+    truyền: direct **gửi lên vẫn 11 cột** (thứ tự cũ, có `ヨコオ品番`) nhưng **hiển thị + Export chỉ 10
+    cột theo đúng ảnh spec** — `出荷日` đưa lên **đầu**, bỏ cột `ヨコオ品番`:
+    `出荷日,開始時刻,終了時刻,顧客,納入先,工場コード,品番,収容数,箱数,納入数`. Mỗi upload được **chiếu dòng theo TÊN
+    cột** (`AppendCsvProjected`) nên cột thừa (`ヨコオ品番`) bị bỏ, `出荷日` được kéo lên đầu dù ở vị trí nào
+    trong CSV nguồn, và format cũ/lệch (thừa `積込箱数`, `状態` bị lặp text `〇 完了`+mã, thừa cột `操作`…)
+    không làm cột "lúc có lúc mất" và không lệch dữ liệu; `状態` lấy **cột `状態` cuối cùng** (mã 0/9). Nhờ
+    chốt cột, **Export cũng ổn định** (Export serialize đúng `DataTable` đang bind, **bỏ cột `#`**). Sau đó `ApplyDisplayFilter` lọc theo type,
+    **duyệt theo thứ tự log stream** (thứ tự nhận upload → thứ tự dòng = thứ tự tạo); 削除/移動 chỉ đè cái
+    tạo **trước** nó:
+    - monitor: dòng `状態=9` (削除) hủy dòng `状態=0` (正常) cùng `入出庫伝票番号` **gần nhất TẠO TRƯỚC** nó
+      (stack theo invoiceNo: `0` push, `9` pop dòng `0` trước gần nhất) — ẩn CẢ dòng xóa LẪN dòng gốc.
+      `9` mồ côi (không có `0` trước) **không hủy gì**, tuyệt đối không ăn dòng `0` tạo SAU.
+    - direct: hiện hết.
+    - pallet (key `PLNo.+顧客+納入便`): giữ **đúng 1 dòng/khóa = trạng thái mới nhất**. `状態 0`(積込)/`1`(移動)
+      set dòng hiện tại (`移動` tạo sau **đè** `積込` tạo trước → không hiện 2 dòng); `状態 9`(削除) xóa
+      trạng thái hiện tại — chỉ tác động cái tạo **trước** nó, nên khóa **tạo lại sau** dòng `削除` vẫn hiện.
+      **Pallet bị 移動 dời HẾT hàng** → app ghi dòng `移動` với `品目明細` **rỗng** (`buildProductDetails`
+      trả `""` khi pallet nguồn hết invoice); trạng thái mới nhất rỗng ⇒ coi như đã xóa, **KHÔNG hiển
+      thị** (tránh 1 dòng trống). Khóa `積込` lại sau đó (dòng có `品目明細`) thì lại hiện.
+    **`状態` chỉ dùng để lọc, KHÔNG hiển thị (monitor & pallet, 2026-07-14):** canonical vẫn giữ `状態`
+    để `AppendCsvProjected` + `ApplyDisplayFilter` đọc mã số, nhưng `GetDayLogAsync` gọi
+    `RemoveColumn(dto, "状態")` **sau khi lọc** ⇒ `状態` không xuất hiện ở **cả lưới lẫn Export**. Cột
+    hiển thị/xuất thực tế: **monitor 7 cột, pallet 6 cột** (bỏ `状態`), direct 10 cột (vốn không có `状態`).
+    Cột **`#`** + **tô màu dòng trùng** (`DupPalette`); **header cột căn GIỮA** (`ConfigureGrid` đặt
+    `ColumnHeadersDefaultCellStyle.Alignment = MiddleCenter` cho mọi lưới); cột lưới **kéo dài tới mép
     phải** (`AutoSizeColumnsMode = Fill`) với **tỉ lệ % theo từng cột** (`ApplyLogColumnWeights` gán
     `FillWeight` theo header — 品目明細 rộng, #/状態 hẹp; chạy lại mỗi lần `DataBindingComplete` vì cột
-    auto-generate). Né nhấp nháy bằng chữ ký `_dayLogSig`.
+    auto-generate). Né nhấp nháy bằng chữ ký `_dayLogSig`. **Khi rebind phải `DataSource = null` +
+    `Columns.Clear()` TRƯỚC khi gán `DataTable` mới**: với `AutoGenerateColumns`, DataGridView **giữ lại
+    `DisplayIndex` cũ** của cột auto-generate trùng `DataPropertyName` giữa 2 lần bind — monitor & pallet
+    cùng có cột `状態` (và `開始/終了時刻`), nên sau khi xem pallet (`状態` ở index 7) rồi quay lại monitor,
+    `状態` giữ index 7 và đẩy `数量` xuống index 8 ⇒ **2 cột cuối bị hoán vị**. Clear cột buộc tạo lại
+    đúng thứ tự `DataTable`.
   - **Layout bộ lọc (`_filterRow`)** là **một `TableLayoutPanel` 1 hàng** (không còn `FlowLayoutPanel`
     + hack `Padding` top): mỗi control `AutoSize` + `Anchor` (nhóm lọc neo `Left`, nút xuất neo `Right`)
     nên **tự canh giữa theo chiều dọc và thẳng hàng** trên cùng một baseline — không còn offset top phải
@@ -324,7 +352,15 @@ MySQL bên ngoài quản lý.
     **cùng cột `#`**, cùng thứ tự dòng) ra `.csv` (UTF-8 BOM) qua `SaveFileDialog`. Bảng được dựng
     **một chỗ** ở `RefreshDayLogAsync` → sửa cách dựng bảng thì cả lưới lẫn file xuất đổi theo, không
     lệch nhau.
-  - **Nút "Refresh" (更新)** nằm **ngay bên trái nút Xuất CSV** (`_btnRefreshDay`, neo phải). Làm mới
+  - **Nút "補給データ出力" (xuất dữ liệu bổ sung)** (`_btnSupplyExport`, ngay **bên trái** nút Xuất CSV) —
+    **chỉ hiện khi chọn radio direct** (`Visible = _rbDirect.Checked`, cập nhật trong `OnDayFilterChanged`
+    + `ApplyUiConfig`; **không** có công tắc `configuration.xml`). Đây là **một kiểu xuất KHÁC**, không
+    serialize lưới: `MonitorService.GetDirectSupplyExportAsync(date)` đọc lại **CSV thô** của direct
+    trong ngày (nên vẫn thấy `収容数`/`ヨコオ品番` mà layout hiển thị 10 cột đã bỏ), **chỉ giữ dòng トヨタ**
+    (`顧客 == "トヨタ"`), xuất đúng **5 cột** `出荷日,品番,収容数(数量),工場コード,ヨコオ品番` (SJIS, không cột `#`).
+    Cột `工場コード` được **ánh xạ lại** bằng `MapFactoryCode` — theo **ký tự thứ 5–6** (index 0-based 4–5):
+    `…T3…`→`A6`, `…L3…`→`A9`, còn lại `""` (vd `1000T322`→`A6`, `1000L324`→`A9`).
+  - **Nút "Refresh" (更新)** nằm **ngay bên trái nút 補給データ出力** (`_btnRefreshDay`, neo phải). Làm mới
     bảng log **ngay lập tức** theo yêu cầu (reset `_dayLogSig = ""` rồi gọi `RefreshAsync`) thay vì đợi
     timer 2s. **Mặc định ẩn**, chỉ hiện khi `showRefreshButton = true` — vì lưới đã tự làm mới mỗi 2s
     (file mới từ app Android tự xuất hiện trong ~2s) nên nút này dư thừa với vận hành bình thường.

@@ -102,9 +102,27 @@ CSV uploads** (one row per Bluetooth frame, informational only now); **right = t
 DAY** for one CSV type — driven by a **date picker (default today)** + a **type radio (default
 monitor)**, NOT by the CSV selected on the left. `MonitorService.GetDayLogAsync(typeKey, date)`
 aggregates the rows of **all** uploads of that type whose `LogDate` matches the day (rows from
-multiple uploads concatenated; columns = the type's row-1 header; identical rows colour-coded). The
+multiple uploads concatenated; identical rows colour-coded). The
 day comes from each upload's filename date (`CsvUpload.LogDate`; legacy uploads without a date fall
-back to the received-local date).
+back to the received-local date). **Columns are PINNED to the type's canonical DISPLAY header**
+(`MonitorService.CanonicalHeaders`: monitor 8-col, pallet 7-col, **direct 10-col**), **NOT derived
+from the uploaded CSV** nor from "whichever upload arrived first". The display header may
+**intentionally differ from the phone's wire layout**: direct is **uploaded 11-col** (old order, with
+`ヨコオ品番`) but **shown/exported 10-col** per the display spec — `出荷日` pulled to the **front** and
+`ヨコオ品番` dropped: `出荷日,開始時刻,終了時刻,顧客,納入先,工場コード,品番,収容数,箱数,納入数`. Each upload's rows are
+re-projected onto those canonical columns **by header name** (`AppendCsvProjected`), so a canonical
+column absent from the source is `""`, extra source columns (`ヨコオ品番`) are dropped, `出荷日` lands first
+regardless of its source position, and older/mismatched monitor/pallet layouts (an extra `積込箱数`, a
+duplicated `状態` = text `〇 完了` + numeric code, or a stray `操作` col on pallet) can't shift the columns
+or make them "jump" between renders — which also keeps **Export** stable (Export serializes the exact
+bound `DataTable`, minus the leading `#` ordinal column). The `状態` column resolves to the **last**
+`状態` in the source header (always the numeric 0/9 code).
+
+**`状態` is filter-only, NOT shown (monitor & pallet, 2026-07-14).** The canonical headers keep `状態`
+so `AppendCsvProjected` + `ApplyDisplayFilter` can read the numeric code, but `GetDayLogAsync` calls
+`RemoveColumn(dto, "状態")` **after** filtering — so `状態` appears in **neither the grid nor Export**.
+Net shown/exported columns: **monitor 7-col, pallet 6-col** (`状態` dropped), direct 10-col (no `状態`).
+The grid still prepends the display-only `#` ordinal; Export drops only `#` (matching the grid exactly).
 
 **Localized UI (EN / JA).** All dashboard text goes through `UI/Localization.cs` (`Loc.T(key)`);
 a language combo in the toolbar switches at runtime (`Loc.Changed` → `ApplyTexts`). First-run
@@ -149,9 +167,13 @@ stores the date in `CsvUpload.LogDate`, then detects the **type from the CSV's r
 (authoritative) — see `Services/CsvTypes.cs`.
 
 CSV log types (canonical headers — keep Android writer + PC parser in sync):
-- **`monitor_log` (モニタリスト, 9 cols)** `開始時刻,終了時刻,入出庫伝票番号,顧客コード,品目コード,箱数,数量,積込箱数,状態`
-  (`積込箱数` before the trailing `状態`; `状態` code 0=正常/9=削除) → `MonitorEntries` (`LoadedBoxes`).
-  Old 8-col layout (no `積込箱数`) still parsed for backward compat.
+- **`monitor_log` (モニタリスト)** `開始時刻,終了時刻,入出庫伝票番号,顧客コード,品目コード,箱数,数量,状態`
+  (trailing `状態` code 0=正常/9=削除) → `MonitorEntries`. **The current Android writer
+  (`FileLogHelper.writeLog`) emits 8 cols** (no `積込箱数`) — this 8-col layout is the day-log's pinned
+  canonical (`MonitorService.MonitorHeaders`). Older builds emitted a 9-col variant with `積込箱数`
+  before `状態`, and even a 10-col one with a duplicated `状態` (text `〇 完了` + numeric code); those are
+  still ingested and the day-log projects them onto the 8 canonical cols by header name (`状態` = the
+  **last** `状態`). `MonitorEntries.LoadedBoxes` maps `積込箱数` when present.
 - **`pallet_log` (パレット, 7 cols)** `開始時刻,終了時刻,PLNo.,顧客,納入便,品目明細 (品目コード:箱数x数量),状態`
   (`状態` 0=正常/1=移動/9=削除) → `PalletOps` + `PalletOpItems` (品目明細 = space-separated `code:boxesxqty`).
 - **`direct_log` (直送管理, 11 cols)** `開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番`
@@ -161,25 +183,41 @@ CSV log types (canonical headers — keep Android writer + PC parser in sync):
   (The old `legacy` scan format — header `id`/`LogId`, table `SyncLogs` — has been **removed**. A CSV
   whose header matches none of the three types is stored as `Type = "unknown"` with only its `RawCsv`.)
 
-**Per-type display filter (right panel, `MonitorService.ApplyDisplayFilter`):**
-- monitor: a `状態 == 9` (削除) row **cancels** the earlier `状態 == 0` (正常) row with the same
-  `入出庫伝票番号` (Android writes the delete row keeping every field, only `状態` flips — see
-  `StockViewModel.deleteSelectedStock`). Hide **both** the delete row **and** the original it cancels;
-  each 削除 row cancels exactly one 正常 row (oldest first). Show whatever survives. Applies to the
-  grid **and** Export CSV (both read the filtered `DataTable`).
+**Per-type display filter (right panel, `MonitorService.ApplyDisplayFilter`).** Rows are walked in
+**log-stream order** (upload-received order → in-file row order = **creation order**); a delete/move
+only ever supersedes something created **before** it (never after):
+- monitor: a `状態 == 9` (削除) row **cancels** the nearest `状態 == 0` (正常) row with the same
+  `入出庫伝票番号` created **before** it (Android writes the delete row keeping every field, only `状態`
+  flips — see `StockViewModel.deleteSelectedStock`). Hide **both** the delete row **and** the original
+  it cancels (stack per invoiceNo: a `0` pushes, a `9` pops the most-recent prior `0`). An **orphan**
+  `9` (no prior `0` in the day — e.g. its original is in another day/upload) cancels **nothing** and
+  must NOT eat a `0` created after it. Applies to the grid **and** Export CSV.
 - direct: show all.
-- pallet: key = (`PLNo.`, `顧客`, `納入便`). A `状態 == 9` (削除) means the whole pallet was **deleted
-  from the DB** (`ShippingActivity.performDeletePallet` removes the pallet + its invoices) → hide
-  **every** row of that key (the 削除 row **and** its 正常/移動 rows), so a deleted pallet vanishes
-  entirely from the grid **and** Export CSV. Among surviving rows (状態 0/1) of a **non-deleted** key
-  show only the one with the **latest `終了時刻`**.
+- pallet: key = (`PLNo.`, `顧客`, `納入便`). Keep **exactly one row per key = its latest state**:
+  `状態 0` (積込) / `1` (移動) set the current row (a later `移動` **supersedes** the earlier `積込`, so a
+  moved pallet is not shown twice); `状態 9` (削除, whole pallet removed by
+  `ShippingActivity.performDeletePallet`) clears it — removing only what was created **before** it, so
+  a key **re-created after** a `削除` shows again. **A pallet emptied by a `移動`** (its `品目明細` is blank —
+  Android's `FileLogHelper.buildProductDetails` returns `""` once the source pallet has no invoices
+  left) is **treated as cleared too and NOT shown** (a blank latest state ⇒ no items ⇒ hide, rather
+  than a blank row); a key `積込`-ed again with items afterwards shows again. (Old rule was "hide every row of any key that ever
+  had a `9` + keep latest `終了時刻`"; that nuked re-created pallets and could show `積込`+`移動` twice.)
 
 **Supersede:** a newer `index` for the same `(termId, type)` marks older `CsvUploads`
 `Superseded=true`. The per-day right panel aggregates ALL uploads of the day (incl. superseded) then
-applies the display filter above. Columns come from the CSV's own row 1 (dynamic per type). An
+applies the display filter above. Columns are the type's **pinned canonical header** (see the
+GetDayLogAsync note above) — not the CSV's own row 1 — so they don't drift with mismatched uploads. An
 **Export CSV** button (right of the day-log filter) writes the currently-shown (filtered) day-log to a
-file — it serializes the exact `DataTable` the grid is bound to, so grid and file never drift. A
-**Refresh** button (`btn_refresh`, immediately left of Export) force-reloads the day-log now (resets
+file — it serializes the exact `DataTable` the grid is bound to (minus the display-only `#` ordinal),
+so grid and file never drift. A **補給データ出力** (supply-export) button (`btn_supply_export`,
+`_btnSupplyExport`, immediately left of Export) is **shown ONLY on the direct radio** (its `Visible`
+tracks `_rbDirect.Checked` — no `configuration.xml` toggle). It is a **different** export from the grid:
+`MonitorService.GetDirectSupplyExportAsync(date)` re-reads the day's **raw** direct uploads (so it still
+sees `収容数`/`ヨコオ品番`, which the 10-col display drops), keeps **only トヨタ rows** (`顧客 == "トヨタ"`), and
+emits exactly **5 columns** `出荷日,品番,収容数(数量),工場コード,ヨコオ品番` (SJIS, no `#`). The `工場コード` value is
+remapped by `MapFactoryCode` — its **5th–6th chars** (0-based index 4–5): `…T3…`→`A6`, `…L3…`→`A9`, else
+`""` (e.g. `1000T322`→`A6`, `1000L324`→`A9`). A
+**Refresh** button (`btn_refresh`, immediately left of the supply button) force-reloads the day-log now (resets
 `_dayLogSig` then calls `RefreshAsync`) instead of waiting for the 2s timer; it is **hidden by default**
 and shown only when `showRefreshButton` is `true` (the grid already auto-reloads every 2 s, so it's
 redundant for normal use). The left-bottom CSV list is also filtered by the date picker (by filename date
