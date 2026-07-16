@@ -34,10 +34,12 @@ namespace LeontecSyncLogSystem.Services
         // pallet (パレット単位, 7 cols): 品目明細 = space-separated 品目コード:箱数x数量; trailing 状態 code.
         public const string PalletHeader =
             "開始時刻,終了時刻,PLNo.,顧客,納入便,品目明細 (品目コード:箱数x数量),状態";
-        // direct (直送管理単位, 11 cols): one row per completed 照合 (no 状態 column — always shown).
-        // 工場コード moved to right after 納入先 (Android extracts it from the トヨタ QR ticket, chars 23-30).
+        // direct (直送管理単位, 12 cols): one row per completed 照合 + a trailing 状態 code (0=正常/9=削除,
+        // like monitor). 工場コード moved to right after 納入先 (Android extracts it from the トヨタ QR ticket,
+        // chars 23-30). The 状態 column was added 2026-07-16: deleting a completed record writes a second
+        // row keeping every field, only 状態 flipped to 9. Older 11-col uploads (no 状態) are still parsed.
         public const string DirectHeader =
-            "開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番";
+            "開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番,状態";
 
         public static string TypeKey(CsvType t) => t switch
         {
@@ -197,10 +199,11 @@ namespace LeontecSyncLogSystem.Services
         }
 
         /// <summary>
-        /// Parse the direct-delivery (直送管理単位) CSV body into entries. 11-col layout
-        /// (工場コード moved to right after 納入先):
-        /// 開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番.
-        /// One row per completed 照合 (no 状態 column).
+        /// Parse the direct-delivery (直送管理単位) CSV body into entries. Current 12-col layout
+        /// (工場コード moved to right after 納入先, trailing 状態 code 0/9):
+        /// 開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番,状態.
+        /// One row per completed 照合; a 状態=9 (削除) row keeps every field, only 状態 flipped (like
+        /// monitor). Older 11-col uploads (no 状態) are still parsed — their 状態 defaults to "0" (正常).
         /// </summary>
         public static List<DirectEntry> ParseDirect(string csv)
         {
@@ -221,6 +224,7 @@ namespace LeontecSyncLogSystem.Services
                     Boxes = ToInt(f[8]),
                     DeliveryQty = ToInt(f[9]),
                     YokooPartNo = f[10],
+                    StatusCode = f.Count >= 12 ? f[11].Trim() : "0",  // 状態 (0/9); absent in legacy 11-col → 正常
                 });
             }
             return result;

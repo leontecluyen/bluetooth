@@ -128,6 +128,11 @@ namespace LeontecSyncLogSystem
                     itemMaster.EnsureSchemaAsync().GetAwaiter().GetResult();
                     itemMaster.UpsertFromCsvAsync().GetAwaiter().GetResult();
 
+                    // Patch existing DBs that pre-date the direct-log 状態 column (EnsureCreated won't add
+                    // a column to an already-created table). Best-effort; no-op on a fresh DB.
+                    scope.ServiceProvider.GetRequiredService<ICsvStore>()
+                        .EnsureSchemaAsync().GetAwaiter().GetResult();
+
                     var status = scope.ServiceProvider.GetRequiredService<ServiceStatus>();
                     var deviceStore = scope.ServiceProvider.GetRequiredService<IDeviceStore>();
                     var saved = deviceStore.LoadAllAsync().GetAwaiter().GetResult();

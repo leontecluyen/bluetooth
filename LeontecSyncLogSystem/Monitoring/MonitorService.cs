@@ -16,17 +16,15 @@ namespace LeontecSyncLogSystem.Monitoring
     {
         private readonly ServiceStatus _status;
         private readonly ICsvStore _csvStore;
-        private readonly IItemMasterStore _itemMasterStore;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<MonitorService> _logger;
 
         public MonitorService(
-            ServiceStatus status, ICsvStore csvStore, IItemMasterStore itemMasterStore,
+            ServiceStatus status, ICsvStore csvStore,
             IServiceScopeFactory scopeFactory, ILogger<MonitorService> logger)
         {
             _status = status;
             _csvStore = csvStore;
-            _itemMasterStore = itemMasterStore;
             _scopeFactory = scopeFactory;
             _logger = logger;
         }
@@ -274,11 +272,13 @@ namespace LeontecSyncLogSystem.Monitoring
         /// <summary>
         /// Build the 直送 (direct) day-log for <paramref name="date"/> from the normalized
         /// <c>direct_entries</c> table, projected onto the pinned 10-col <see cref="DirectHeaders"/>
-        /// (出荷日 first, no ヨコオ品番). direct has no 状態 and its display filter shows all rows.
+        /// (出荷日 first, no ヨコオ品番). Since 2026-07-16 direct carries a 状態 code (0/9) too: the
+        /// 削除-cancels-earlier-正常 pair is removed at the entity level by <see cref="FilterDirectDeletes"/>
+        /// (so 状態 never needs to reach the projected columns), and the DTO-level display filter is a no-op.
         /// </summary>
         private async Task<CsvTableDto> BuildDirectDtoAsync(DateOnly date, CancellationToken token)
         {
-            var entries = await _csvStore.GetDirectEntriesForDayAsync(date, token);
+            var entries = FilterDirectDeletes(await _csvStore.GetDirectEntriesForDayAsync(date, token));
             var dto = new CsvTableDto { Headers = DirectHeaders.ToList() };
             foreach (var e in entries)
                 dto.Rows.Add(new[]
@@ -341,23 +341,18 @@ namespace LeontecSyncLogSystem.Monitoring
         /// 5-column supply layout <c>出荷日, 品番, 収容数(数量), 工場コード, ヨコオ品番</c>. The 工場コード value is
         /// remapped by <see cref="MapFactoryCode"/> (its 5th–6th chars: "…T3…" → "A6", "…L3…" → "A9",
         /// anything else → ""). The <b>品番</b> column is shown <b>dashed</b> (<see cref="DashPartNo"/>,
-        /// e.g. <c>0860900150</c> → <c>08609-00150</c>) — the same dashed form used for the ヨコオ品番 lookup.
+        /// e.g. <c>0860900150</c> → <c>08609-00150</c>).
         ///
-        /// <para>The <b>ヨコオ品番</b> column is <b>looked up from the item master</b> (NOT the upload's own
-        /// ヨコオ品番 cell, which actually held the 出荷伝票No): the 品番 is dashed (<c>0860900150</c> →
-        /// <c>08609-00150</c>, see <see cref="DashPartNo"/>) and matched against the item master's 品目名称
-        /// with a <c>LIKE '%…%'</c> search; among the matches the one that sorts LAST (ORDER BY name DESC)
-        /// wins and its 品目名称 IS the ヨコオ品番 (see <see cref="ResolveYokoo"/>). No match ⇒ blank.</para>
+        /// <para>The <b>ヨコオ品番</b> column is now taken <b>directly from the upload's own ヨコオ品番 cell</b>
+        /// (<see cref="DirectEntry.YokooPartNo"/>) — the Android app fills it correctly now, so the old
+        /// item-master 品目名称 lookup was removed (2026-07-16).</para>
         /// </summary>
         public async Task<CsvTableDto> GetDirectSupplyExportAsync(DateOnly date, CancellationToken token = default)
         {
             // Read the normalized direct_entries rows for the day — exactly what the grid shows (date
             // filtered + respects deletions), NOT the raw CSV (which re-parses deleted/superseded rows).
-            var entries = await _csvStore.GetDirectEntriesForDayAsync(date, token);
-
-            // The ヨコオ品番 lookup matches 品番 against the item master's 品目名称. Load every name ONCE here
-            // (masters are small) and match in memory, rather than one DB round-trip per exported row.
-            var itemNames = await _itemMasterStore.GetAllNamesAsync(token);
+            // Then apply the same 削除/正常 pair-cancel as the grid so a deleted record never leaks here.
+            var entries = FilterDirectDeletes(await _csvStore.GetDirectEntriesForDayAsync(date, token));
 
             var dto = new CsvTableDto
             {
@@ -371,26 +366,22 @@ namespace LeontecSyncLogSystem.Monitoring
                 .OrderByDescending(e => e.EndTime.HasValue)
                 .ThenByDescending(e => e.EndTime)
                 .ToList();
-            int matched = 0;
             foreach (var e in toyotaRows)
             {
-                var dashedPart = DashPartNo(e.PartNo);           // 0860900150 → 08609-00150 (shown dashed)
-                var yokoo = ResolveYokoo(e.PartNo, itemNames);   // "" when nothing matches
-                if (yokoo.Length > 0) matched++;
                 dto.Rows.Add(new[]
                 {
                     e.ShipDate?.ToString("yyyy/MM/dd") ?? "",  // 出荷日
-                    dashedPart,                                // 品番 (dashed, e.g. 08609-00150)
+                    DashPartNo(e.PartNo),                      // 品番 (dashed, e.g. 08609-00150)
                     e.Capacity.ToString(),                     // 収容数(数量)
                     MapFactoryCode(e.FactoryCode),             // 工場コード → A6 / A9 / ""
-                    yokoo,                                     // ヨコオ品番 (from item master, "" if not found)
+                    e.YokooPartNo,                             // ヨコオ品番 (from the upload as-is)
                 });
             }
 
             _logger.LogInformation(
                 "Supply export built: date={Date:yyyy-MM-dd} → {Toyota}/{Total} トヨタ rows from direct_entries " +
-                "(sorted by 終了時刻 desc); ヨコオ品番 resolved for {Matched}/{Toyota} rows against {Names} item-master names.",
-                date.ToDateTime(TimeOnly.MinValue), toyotaRows.Count, entries.Count, matched, toyotaRows.Count, itemNames.Count);
+                "(after 削除 filter, sorted by 終了時刻 desc); ヨコオ品番 taken from the upload cell as-is.",
+                date.ToDateTime(TimeOnly.MinValue), toyotaRows.Count, entries.Count);
             return dto;
         }
 
@@ -406,23 +397,58 @@ namespace LeontecSyncLogSystem.Monitoring
         }
 
         /// <summary>
-        /// Resolve a 品番 to its ヨコオ品番 via the item master (in-memory equivalent of
-        /// <c>SELECT name FROM item_master WHERE name LIKE '%{dashed}%' ORDER BY name DESC LIMIT 1</c>):
-        /// dash the 品番 (<see cref="DashPartNo"/>), then among every 品目名称 that CONTAINS that dashed
-        /// code take the one that sorts LAST (ordinal). Returns "" when the 品番 is blank or nothing matches.
+        /// Remove the 直送 削除/正常 pair from <paramref name="entries"/> (which MUST already be in
+        /// creation order — owning-upload received order, then in-file row order). Since 2026-07-16 the
+        /// Android app writes a delete as a second row that keeps EVERY field, only 状態 flipped to 9
+        /// (exactly like the monitor 削除). So a 状態=9 row cancels the nearest EARLIER kept row with an
+        /// identical field signature (all cells except 状態), and BOTH are hidden. An orphan 9 (no matching
+        /// earlier row — e.g. its original is in another day/upload) cancels nothing; the 9 row itself is
+        /// always dropped. Mirrors the monitor rule in <see cref="ApplyDisplayFilter"/>, but keyed on the
+        /// full row signature because direct has no single invoice-number column. Used by BOTH the day-log
+        /// grid and the 補給データ出力 supply export so they stay consistent.
         /// </summary>
-        private static string ResolveYokoo(string partNo, IReadOnlyList<string> names)
+        private static List<DirectEntry> FilterDirectDeletes(IReadOnlyList<DirectEntry> entries)
         {
-            var dashed = DashPartNo(partNo);
-            if (dashed.Length == 0) return "";
-            string? best = null;
-            foreach (var n in names)
+            var keep = new bool[entries.Count];
+            for (int i = 0; i < keep.Length; i++) keep[i] = true;
+            // signature (every field except 状態) → stack of indices of matching 正常 rows not yet cancelled.
+            var openNormals = new Dictionary<string, Stack<int>>();
+            for (int i = 0; i < entries.Count; i++)
             {
-                if (string.IsNullOrEmpty(n) || n.IndexOf(dashed, StringComparison.Ordinal) < 0) continue;
-                if (best == null || string.CompareOrdinal(n, best) > 0) best = n; // keep the ORDER BY DESC max
+                var e = entries[i];
+                var key = SignatureOf(e);
+                if (e.StatusCode == "9")
+                {
+                    keep[i] = false;                              // the 削除 row is always hidden
+                    if (openNormals.TryGetValue(key, out var stack) && stack.Count > 0)
+                        keep[stack.Pop()] = false;                // cancel the nearest earlier 正常 it matches
+                }
+                else
+                {
+                    if (!openNormals.TryGetValue(key, out var stack)) { stack = new Stack<int>(); openNormals[key] = stack; }
+                    stack.Push(i);
+                }
             }
-            return best ?? "";
+            var kept = new List<DirectEntry>(entries.Count);
+            for (int i = 0; i < entries.Count; i++)
+                if (keep[i]) kept.Add(entries[i]);
+            return kept;
         }
+
+        /// <summary>
+        /// The field signature of a <see cref="DirectEntry"/> = every column EXCEPT 状態, joined by a unit
+        /// separator. Two rows share a signature iff the delete row Android wrote (same fields, only 状態
+        /// flipped) matches its original — which is exactly the pairing <see cref="FilterDirectDeletes"/> needs.
+        /// </summary>
+        private static string SignatureOf(DirectEntry e) => string.Join("", new[]
+        {
+            e.StartTime?.ToString("HH:mm:ss") ?? "",
+            e.EndTime?.ToString("HH:mm:ss") ?? "",
+            e.Customer, e.DeliveryTo, e.FactoryCode,
+            e.ShipDate?.ToString("yyyy/MM/dd") ?? "",
+            e.PartNo, e.Capacity.ToString(), e.Boxes.ToString(), e.DeliveryQty.ToString(),
+            e.YokooPartNo,
+        });
 
         /// <summary>
         /// Remap a 工場コード to its supply code by its <b>5th–6th characters</b> (0-based index 4–5):
@@ -450,7 +476,10 @@ namespace LeontecSyncLogSystem.Monitoring
         ///    before). A pallet fully emptied by a 移動 (its 品目明細 is blank — buildProductDetails returns
         ///    "" once the source pallet has no invoices left) is treated as cleared too and NOT shown
         ///    (rather than a blank row). A key re-created (積込 with items) after being cleared shows again.
-        ///  • <b>direct</b> / others: show everything (no 状態 column).
+        ///  • <b>direct</b>: no-op here — its 削除/正常 pair-cancel runs earlier at the entity level in
+        ///    <see cref="FilterDirectDeletes"/> (keyed on the full row signature), so by the time rows
+        ///    reach this DTO-level filter they're already resolved and 状態 was never projected.
+        ///  • others (unknown): show everything.
         /// </summary>
         private static void ApplyDisplayFilter(string typeKey, CsvTableDto dto)
         {
@@ -532,7 +561,8 @@ namespace LeontecSyncLogSystem.Monitoring
                     dto.Rows = order.Where(k => current[k] >= 0).Select(k => dto.Rows[current[k]]).ToList();
                     break;
                 }
-                // direct_log / legacy / unknown: show everything as-is.
+                // direct_log: no-op here — its 削除/正常 pair-cancel already ran at the entity level in
+                // FilterDirectDeletes. legacy / unknown: show everything as-is.
             }
         }
 

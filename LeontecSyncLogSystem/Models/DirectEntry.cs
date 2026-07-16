@@ -24,5 +24,6 @@ namespace LeontecSyncLogSystem.Models
         public int Boxes { get; set; }                    // 箱数
         public int DeliveryQty { get; set; }              // 納入数
         public string YokooPartNo { get; set; } = "";    // ヨコオ品番
+        public string StatusCode { get; set; } = "0";     // 状態 (code: 0=正常, 9=削除); legacy 11-col uploads → "0"
     }
 }

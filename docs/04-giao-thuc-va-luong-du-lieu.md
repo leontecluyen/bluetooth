@@ -182,15 +182,21 @@ PC nhận diện type từ **token đặc trưng trong row-1**; mỗi type có h
 - **Hiển thị PC:** key = (`PLNo.`, `顧客`, `納入便`). `状態=9` → ẩn; trong các dòng còn lại
   (状態 0/1) cùng key, chỉ hiện dòng có **`終了時刻` mới nhất**.
 
-### `direct_log` (直送管理単位 — 11 cột, type MỚI)
+### `direct_log` (直送管理単位 — 12 cột)
 ```
-開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番
+開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番,状態
 ```
-- 1 dòng = 1 lần 照合 hoàn tất; **không có cột `状態`**.
+- 1 dòng = 1 lần 照合 hoàn tất. **Cột cuối `状態` = code** (`0` = 正常, `9` = 削除) — **thêm 2026-07-16**,
+  giống monitor. Upload **11 cột cũ (không có `状態`)** vẫn nhận được → `状態` mặc định `0`.
 - Cột **`工場コード` nằm ngay sau `納入先`**. Android trích từ chuỗi QR ticket トヨタ (cắt **ký tự 23→30**,
   vd `1000L324` — xem `DeliveryHelper.extractFactoryCode`); khách khác (林/内浜/デンソー) để **trống**.
-→ chuẩn hóa thành **DirectEntries** (PC đọc cột `工場コード` tại index 4).
-- **Hiển thị PC:** hiện **tất cả** các dòng (grid + Export đều kèm cột `工場コード`).
+→ chuẩn hóa thành **DirectEntries** (`DirectEntry.StatusCode` = 状態 code; PC đọc cột `工場コード` tại index 4).
+- **Xóa record đã hoàn thành trên điện thoại** (`DeliveryActivity.showConfirmDeleteDialog`) ghi **1 dòng
+  thứ 2 giữ nguyên mọi field, chỉ lật `状態`=9** (giống monitor ghi dòng 削除).
+- **Hiển thị PC:** hủy **cặp `正常`/`削除`** giống monitor, nhưng lọc **ở mức entity**
+  (`MonitorService.FilterDirectDeletes`) nên áp cho **cả grid lẫn `補給データ出力`**. Direct không có cột số
+  phiếu riêng nên khớp `状態=9` với dòng `正常` gần nhất **trước** nó có **chữ ký field trùng khớp** (mọi cột
+  trừ `状態`); ẩn cả hai. `9` mồ côi không hủy gì. Cột `状態` **KHÔNG** hiện/không xuất (grid + Export vẫn 10 cột).
 
 ### `legacy` (định dạng quét cũ — **ĐÃ GỠ BỎ**)
 

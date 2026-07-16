@@ -118,6 +118,7 @@ namespace LeontecSyncLogSystem.Data
                 entity.Property(e => e.PartNo).HasMaxLength(64);
                 entity.Property(e => e.FactoryCode).HasMaxLength(32);
                 entity.Property(e => e.YokooPartNo).HasMaxLength(64);
+                entity.Property(e => e.StatusCode).HasMaxLength(8);
                 entity.HasOne<CsvUpload>().WithMany().HasForeignKey(e => e.UploadId).OnDelete(DeleteBehavior.Cascade);
             });
 

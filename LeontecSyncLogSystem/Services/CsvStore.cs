@@ -30,6 +30,13 @@ namespace LeontecSyncLogSystem.Services
     /// </summary>
     public interface ICsvStore
     {
+        /// <summary>
+        /// Patch the schema of an ALREADY-created DB to match the current model where
+        /// <c>EnsureCreated()</c> can't (it only builds tables on a fresh DB, never alters an existing
+        /// one). Currently ensures the <c>direct_entries.status_code</c> column exists — added
+        /// 2026-07-16 when the direct log gained a trailing 状態 code. Idempotent; never throws.
+        /// </summary>
+        Task EnsureSchemaAsync(CancellationToken token = default);
         Task SaveAsync(CsvUpload upload, CancellationToken token = default);
         Task<IReadOnlyList<CsvUploadInfo>> GetByDeviceAsync(string? address, CancellationToken token = default);
         Task<string?> GetRawCsvAsync(long uploadId, CancellationToken token = default);
@@ -74,6 +81,53 @@ namespace LeontecSyncLogSystem.Services
         {
             _scopeFactory = scopeFactory;
             _logger = logger;
+        }
+
+        public async Task EnsureSchemaAsync(CancellationToken token = default)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var conn = db.Database.GetDbConnection();
+                bool openedHere = conn.State != System.Data.ConnectionState.Open;
+                if (openedHere) await conn.OpenAsync(token);
+                try
+                {
+                    // Check via information_schema (portable across MySQL 8 + MariaDB — neither reliably
+                    // supports ALTER ... ADD COLUMN IF NOT EXISTS everywhere) then add only if missing.
+                    bool exists;
+                    using (var check = conn.CreateCommand())
+                    {
+                        check.CommandText =
+                            "SELECT COUNT(*) FROM information_schema.COLUMNS " +
+                            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'direct_entries' " +
+                            "AND COLUMN_NAME = 'status_code'";
+                        var raw = await check.ExecuteScalarAsync(token);
+                        exists = raw != null && Convert.ToInt64(raw) > 0;
+                    }
+                    if (!exists)
+                    {
+                        using var alter = conn.CreateCommand();
+                        // Keep in sync with AppDbContext (DirectEntry.StatusCode → varchar(8)).
+                        alter.CommandText =
+                            "ALTER TABLE `direct_entries` ADD COLUMN `status_code` varchar(8) NULL";
+                        await alter.ExecuteNonQueryAsync(token);
+                        _logger.LogInformation(
+                            "direct_entries.status_code column added (was missing on this existing DB).");
+                    }
+                }
+                finally
+                {
+                    if (openedHere) conn.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                // Best-effort like the rest of startup: a fresh DB already has the column (EnsureCreated
+                // built it from the model), and if the table doesn't exist yet there's nothing to patch.
+                _logger.LogWarning("Could not ensure direct_entries.status_code exists: {Msg}", ex.Message);
+            }
         }
 
         public async Task SaveAsync(CsvUpload upload, CancellationToken token = default)

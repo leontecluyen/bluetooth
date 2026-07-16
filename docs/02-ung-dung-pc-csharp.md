@@ -258,7 +258,8 @@ Bảng chuẩn hóa (`monitor_entries`/`pallet_ops`(+`pallet_op_items`)/`direct_
 
 **Bảng `item_master` (品目マスタ) — 2026-07-14.** Bản sao DB của `item_master.csv` (cột `code`/`name`/
 `box_type`/`sub_name` = `品目コード,品目名称,箱種,品目名称_2`), độc lập với `csv_uploads` (không FK, không bị
-`Reset` xoá). Dùng để tra `ヨコオ品番` cho 補給データ出力. **Quản lý bởi `Services/ItemMasterStore.cs`**, chạy
+`Reset` xoá). (Trước dùng để tra `ヨコオ品番` cho 補給データ出力; **tra đó đã bỏ 2026-07-16** — export lấy
+`ヨコオ品番` thẳng từ upload. Bảng vẫn giữ cho app Android + dùng sau.) **Quản lý bởi `Services/ItemMasterStore.cs`**, chạy
 lúc mở tool:
 - `EnsureSchemaAsync` — `CREATE TABLE IF NOT EXISTS item_master (...)`. **Bắt buộc** vì `EnsureCreated()`
   chỉ tạo bảng trên DB **mới toanh**, KHÔNG thêm bảng vào DB đã có dữ liệu (nên không cần drop DB).
@@ -321,8 +322,8 @@ MySQL bên ngoài quản lý.
     trước đây đọc `RawCsv` nên xóa trong DB không có tác dụng. **Cột được CHỐT theo header HIỂN THỊ chuẩn
     của type** (mỗi builder phát header cố định: monitor 8 cột / pallet 7 cột / **direct 10 cột**),
     **KHÔNG lấy theo CSV app gửi lên**. Header hiển thị có thể **cố ý khác** layout trên đường truyền:
-    direct **gửi lên vẫn 11 cột** (thứ tự cũ, có `ヨコオ品番`) nhưng **hiển thị + Export chỉ 10 cột theo đúng
-    ảnh spec** — `出荷日` đưa lên **đầu**, bỏ cột `ヨコオ品番`:
+    direct **gửi lên 12 cột** (thứ tự cũ, có `ヨコオ品番` + `状態` ở cuối — thêm 2026-07-16) nhưng **hiển thị +
+    Export chỉ 10 cột theo đúng ảnh spec** — `出荷日` đưa lên **đầu**, bỏ cột `ヨコオ品番` và `状態`:
     `出荷日,開始時刻,終了時刻,顧客,納入先,工場コード,品番,収容数,箱数,納入数`. `状態` (monitor/pallet) = mã số
     `StatusCode` (0/9/1) đọc để lọc rồi bỏ. **Lưu ý:** giá trị lấy từ bản chuẩn hóa — ô số trống → `0`,
     giờ → `HH:mm:ss`, `出荷日` → `yyyy/MM/dd`. `CanonicalHeaders` đã bỏ (dead sau refactor);
@@ -333,17 +334,23 @@ MySQL bên ngoài quản lý.
     - monitor: dòng `状態=9` (削除) hủy dòng `状態=0` (正常) cùng `入出庫伝票番号` **gần nhất TẠO TRƯỚC** nó
       (stack theo invoiceNo: `0` push, `9` pop dòng `0` trước gần nhất) — ẩn CẢ dòng xóa LẪN dòng gốc.
       `9` mồ côi (không có `0` trước) **không hủy gì**, tuyệt đối không ăn dòng `0` tạo SAU.
-    - direct: hiện hết.
+    - direct (2026-07-16): hủy **cặp `正常`/`削除`** giống monitor, nhưng lọc **ở mức entity**
+      (`MonitorService.FilterDirectDeletes`, KHÔNG trong `ApplyDisplayFilter` — nhánh direct ở đó là no-op)
+      nên dùng chung cho **cả lưới lẫn `補給データ出力`**. Direct không có cột số phiếu riêng nên khớp `状態=9`
+      với dòng `正常` gần nhất **tạo trước** có **chữ ký field trùng khớp** (mọi cột trừ `状態` — dòng xóa giữ
+      nguyên hết, chỉ lật `状態`); ẩn cả hai. `9` mồ côi không hủy gì. (Dòng phải theo thứ tự tạo `ReceivedAtUtc`→`Id`.)
     - pallet (key `PLNo.+顧客+納入便`): giữ **đúng 1 dòng/khóa = trạng thái mới nhất**. `状態 0`(積込)/`1`(移動)
       set dòng hiện tại (`移動` tạo sau **đè** `積込` tạo trước → không hiện 2 dòng); `状態 9`(削除) xóa
       trạng thái hiện tại — chỉ tác động cái tạo **trước** nó, nên khóa **tạo lại sau** dòng `削除` vẫn hiện.
       **Pallet bị 移動 dời HẾT hàng** → app ghi dòng `移動` với `品目明細` **rỗng** (`buildProductDetails`
       trả `""` khi pallet nguồn hết invoice); trạng thái mới nhất rỗng ⇒ coi như đã xóa, **KHÔNG hiển
       thị** (tránh 1 dòng trống). Khóa `積込` lại sau đó (dòng có `品目明細`) thì lại hiện.
-    **`状態` chỉ dùng để lọc, KHÔNG hiển thị (monitor & pallet, 2026-07-14):** canonical vẫn giữ `状態`
-    để `AppendCsvProjected` + `ApplyDisplayFilter` đọc mã số, nhưng `GetDayLogAsync` gọi
-    `RemoveColumn(dto, "状態")` **sau khi lọc** ⇒ `状態` không xuất hiện ở **cả lưới lẫn Export**. Cột
-    hiển thị/xuất thực tế: **monitor 7 cột, pallet 6 cột** (bỏ `状態`), direct 10 cột (vốn không có `状態`).
+    **`状態` chỉ dùng để lọc, KHÔNG hiển thị (monitor, pallet & direct):** với **monitor & pallet**
+    (2026-07-14) canonical vẫn giữ `状態` để `AppendCsvProjected` + `ApplyDisplayFilter` đọc mã số, nhưng
+    `GetDayLogAsync` gọi `RemoveColumn(dto, "状態")` **sau khi lọc** ⇒ `状態` không xuất hiện ở **cả lưới lẫn
+    Export**. Với **direct** (2026-07-16) đơn giản hơn: lọc cặp 削除/正常 chạy **ở mức entity**
+    (`FilterDirectDeletes`) **trước khi chiếu**, nên `状態` không bao giờ vào DTO (header direct 10 cột không
+    có `状態`). Cột hiển thị/xuất thực tế: **monitor 7 cột, pallet 6 cột** (bỏ `状態`), direct 10 cột (không có `状態`).
     **Sắp xếp (cả 3 loại):** sau khi lọc (và sau khi bỏ `状態`), các dòng được **sắp theo `終了時刻` (giờ
     hoàn thành) GIẢM DẦN** — mới hoàn thành nhất lên đầu (`MonitorService.SortByEndTimeDesc`, ổn định;
     giờ rỗng/không parse được xếp cuối). Lưới bind theo thứ tự này và Export serialize đúng bảng đó ⇒
@@ -377,21 +384,18 @@ MySQL bên ngoài quản lý.
   - **Nút "補給データ出力" (xuất dữ liệu bổ sung)** (`_btnSupplyExport`, ngay **bên trái** nút Xuất CSV) —
     **chỉ hiện khi chọn radio direct** (`Visible = _rbDirect.Checked`, cập nhật trong `OnDayFilterChanged`
     + `ApplyUiConfig`; **không** có công tắc `configuration.xml`). Đây là **một kiểu xuất KHÁC**, không
-    serialize lưới nhưng **đọc CÙNG NGUỒN với lưới**: `MonitorService.GetDirectSupplyExportAsync(date)`
-    đọc bảng chuẩn hóa `direct_entries` (`GetDirectEntriesForDayAsync` — **đã lọc ngày + tôn trọng xóa**,
-    KHÔNG còn parse `RawCsv` như trước nên **không dư dòng** so với lưới), **chỉ giữ dòng トヨタ**
+    serialize lưới nhưng **đọc CÙNG NGUỒN + CÙNG BỘ LỌC với lưới**: `MonitorService.GetDirectSupplyExportAsync(date)`
+    đọc bảng chuẩn hóa `direct_entries` (`GetDirectEntriesForDayAsync`) rồi **`FilterDirectDeletes`** — **đã
+    lọc ngày + hủy cặp 削除/正常** như lưới nên **không dư dòng**, **chỉ giữ dòng トヨタ**
     (`顧客 == "トヨタ"`), sắp theo `終了時刻` desc, xuất đúng **5 cột** `出荷日,品番,収容数(数量),工場コード,ヨコオ品番`
     (SJIS, không cột `#`; `収容数` lấy từ `DirectEntry.Capacity`). Cột `品番` **xuất dạng có dấu**
-    (`DashPartNo`, `0860900150`→`08609-00150`) — cùng dạng dùng để tra `ヨコオ品番`.
+    (`DashPartNo`, `0860900150`→`08609-00150`).
     Cột `工場コード` được **ánh xạ lại** bằng `MapFactoryCode` — theo **ký tự thứ 5–6** (index 0-based 4–5):
     `…T3…`→`A6`, `…L3…`→`A9`, còn lại `""` (vd `1000T322`→`A6`, `1000L324`→`A9`).
-  - **Cột `ヨコオ品番` giờ TRA từ bảng `item_master` (2026-07-14)**, KHÔNG còn lấy nguyên xi ô `ヨコオ品番`
-    của upload (ô đó thực chất chứa 出荷伝票No, xem [`docs/03`](03-ung-dung-android.md) + [`docs/04`](04-giao-thuc-du-lieu.md)).
-    Quy trình (`MonitorService.ResolveYokoo` + `DashPartNo`): lấy `品番` → **chèn dấu `-` sau ký tự thứ 5**
-    (`0860900150` → `08609-00150`; đã có `-` hoặc ngắn hơn 6 ký tự thì giữ nguyên) → tìm trong `item_master`
-    dòng có `品目名称 LIKE '%08609-00150%'`, `ORDER BY 品目名称 DESC LIMIT 1` (khớp nhiều thì lấy dòng sắp
-    **cuối** theo thứ tự tăng dần = lớn nhất ordinal); `品目名称` khớp đó **chính là** `ヨコオ品番`. **Không khớp ⇒ để trống.**
-    Danh sách tên item_master được nạp **1 lần** đầu hàm rồi so khớp trong bộ nhớ (không round-trip DB từng dòng).
+  - **Cột `ヨコオ品番` giờ LẤY TRỰC TIẾP từ ô `ヨコオ品番` của upload** (`DirectEntry.YokooPartNo`) — **bỏ tra
+    `item_master` (2026-07-16)**: app Android đã điền đúng nên không cần suy ra nữa. Đã **xóa `ResolveYokoo`**
+    và **bỏ phụ thuộc `IItemMasterStore`** khỏi `MonitorService` (bảng `item_master` vẫn giữ cho app Android
+    + dùng sau).
   - **Nút "Refresh" (更新)** nằm **ngay bên trái nút 補給データ出力** (`_btnRefreshDay`, neo phải). Làm mới
     bảng log **ngay lập tức** theo yêu cầu (reset `_dayLogSig = ""` rồi gọi `RefreshAsync`) thay vì đợi
     timer 2s. **Mặc định ẩn**, chỉ hiện khi `showRefreshButton = true` — vì lưới đã tự làm mới mỗi 2s

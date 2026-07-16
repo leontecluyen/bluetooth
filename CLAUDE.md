@@ -121,9 +121,10 @@ respects deletions, and can never show more rows than the grid (`収容数` come
 it no longer re-parses `RawCsv`). **Columns are PINNED to the type's canonical DISPLAY header**
 (`MonitorService.CanonicalHeaders`: monitor 8-col, pallet 7-col, **direct 10-col**), **NOT derived
 from the uploaded CSV** nor from "whichever upload arrived first". The display header may
-**intentionally differ from the phone's wire layout**: direct is **uploaded 11-col** (old order, with
-`ヨコオ品番`) but **shown/exported 10-col** per the display spec — `出荷日` pulled to the **front** and
-`ヨコオ品番` dropped: `出荷日,開始時刻,終了時刻,顧客,納入先,工場コード,品番,収容数,箱数,納入数`. Each upload's rows are
+**intentionally differ from the phone's wire layout**: direct is **uploaded 12-col** (old order, with
+`ヨコオ品番` + a trailing `状態` code added 2026-07-16) but **shown/exported 10-col** per the display spec —
+`出荷日` pulled to the **front** and both `ヨコオ品番` + `状態` dropped:
+`出荷日,開始時刻,終了時刻,顧客,納入先,工場コード,品番,収容数,箱数,納入数`. Each upload's rows are
 re-projected onto those canonical columns **by header name** (`AppendCsvProjected`), so a canonical
 column absent from the source is `""`, extra source columns (`ヨコオ品番`) are dropped, `出荷日` lands first
 regardless of its source position, and older/mismatched monitor/pallet layouts (an extra `積込箱数`, a
@@ -132,9 +133,12 @@ or make them "jump" between renders — which also keeps **Export** stable (Expo
 bound `DataTable`, minus the leading `#` ordinal column). The `状態` column resolves to the **last**
 `状態` in the source header (always the numeric 0/9 code).
 
-**`状態` is filter-only, NOT shown (monitor & pallet, 2026-07-14).** The canonical headers keep `状態`
-so `AppendCsvProjected` + `ApplyDisplayFilter` can read the numeric code, but `GetDayLogAsync` calls
-`RemoveColumn(dto, "状態")` **after** filtering — so `状態` appears in **neither the grid nor Export**.
+**`状態` is filter-only, NOT shown (monitor, pallet & direct).** For **monitor & pallet** (2026-07-14) the
+canonical headers keep `状態` so `AppendCsvProjected` + `ApplyDisplayFilter` can read the numeric code, but
+`GetDayLogAsync` calls `RemoveColumn(dto, "状態")` **after** filtering — so `状態` appears in **neither the
+grid nor Export**. For **direct** (2026-07-16) it's simpler: the 削除/正常 pair-cancel runs **at the entity
+level** in `MonitorService.FilterDirectDeletes` *before* projecting, so `状態` is never put into the direct
+DTO at all (the 10-col `DirectHeaders` has no `状態`) and `ApplyDisplayFilter`'s direct branch is a no-op.
 Net shown/exported columns: **monitor 7-col, pallet 6-col** (`状態` dropped), direct 10-col (no `状態`).
 The grid still prepends the display-only `#` ordinal; Export drops only `#` (matching the grid exactly).
 
@@ -190,9 +194,13 @@ CSV log types (canonical headers — keep Android writer + PC parser in sync):
   **last** `状態`). `MonitorEntries.LoadedBoxes` maps `積込箱数` when present.
 - **`pallet_log` (パレット, 7 cols)** `開始時刻,終了時刻,PLNo.,顧客,納入便,品目明細 (品目コード:箱数x数量),状態`
   (`状態` 0=正常/1=移動/9=削除) → `PalletOps` + `PalletOpItems` (品目明細 = space-separated `code:boxesxqty`).
-- **`direct_log` (直送管理, 11 cols)** `開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番`
-  (1 row = 1 completed 照合; no 状態 column; `工場コード` right after `納入先` — Android extracts it from the
-  トヨタ QR ticket, chars 23–30 e.g. `1000L324`, blank for other customers) → `DirectEntries`.
+- **`direct_log` (直送管理, 12 cols)** `開始時刻,終了時刻,顧客,納入先,工場コード,出荷日,品番,収容数,箱数,納入数,ヨコオ品番,状態`
+  (1 row = 1 completed 照合; trailing `状態` code 0=正常/9=削除 added 2026-07-16, same as monitor; `工場コード`
+  right after `納入先` — Android extracts it from the トヨタ QR ticket, chars 23–30 e.g. `1000L324`, blank for
+  other customers) → `DirectEntries` (`DirectEntry.StatusCode`). **Older 11-col uploads (no `状態`) still
+  ingest** — their `状態` defaults to `0`. Deleting a completed record on the phone
+  (`DeliveryActivity.showConfirmDeleteDialog`) writes a second row keeping every field, only `状態` flipped
+  to `9` — the PC cancels that pair (see the per-type display filter below).
 
   (The old `legacy` scan format — header `id`/`LogId`, table `SyncLogs` — has been **removed**. A CSV
   whose header matches none of the three types is stored as `Type = "unknown"` with only its `RawCsv`.)
@@ -212,7 +220,12 @@ only ever supersedes something created **before** it (never after):
   it cancels (stack per invoiceNo: a `0` pushes, a `9` pops the most-recent prior `0`). An **orphan**
   `9` (no prior `0` in the day — e.g. its original is in another day/upload) cancels **nothing** and
   must NOT eat a `0` created after it. Applies to the grid **and** Export CSV.
-- direct: show all.
+- direct (2026-07-16): **same 削除/正常 pair-cancel as monitor**, but filtered **at the entity level** in
+  `MonitorService.FilterDirectDeletes` (not in `ApplyDisplayFilter` — its direct branch is a no-op) so the
+  same rule feeds **both** the day-log grid **and** `補給データ出力`. Because direct has no single
+  invoice-number column, a `状態 == 9` row is matched to the nearest earlier kept row with an **identical
+  full field signature** (every column except `状態` — the delete row keeps them all, only `状態` flips);
+  both are hidden. Orphan `9` cancels nothing. Rows must be in creation order (`ReceivedAtUtc` then `Id`).
 - pallet: key = (`PLNo.`, `顧客`, `納入便`). Keep **exactly one row per key = its latest state**:
   `状態 0` (積込) / `1` (移動) set the current row (a later `移動` **supersedes** the earlier `積込`, so a
   moved pallet is not shown twice); `状態 9` (削除, whole pallet removed by
@@ -233,19 +246,17 @@ so grid and file never drift. A **補給データ出力** (supply-export) button
 `_btnSupplyExport`, immediately left of Export) is **shown ONLY on the direct radio** (its `Visible`
 tracks `_rbDirect.Checked` — no `configuration.xml` toggle). It is a **different** export from the grid:
 `MonitorService.GetDirectSupplyExportAsync(date)` reads the day's rows from the **normalized
-`direct_entries` table** (`GetDirectEntriesForDayAsync` — the same source as the day-log grid, so it is
-date-filtered and respects deletions, never showing more than the grid; `収容数` = `DirectEntry.Capacity`),
+`direct_entries` table** (`GetDirectEntriesForDayAsync` → then `FilterDirectDeletes` — the same source AND
+the same 削除/正常 pair-cancel as the day-log grid, so it is date-filtered and respects deletions, never
+showing more than the grid; `収容数` = `DirectEntry.Capacity`),
 keeps **only トヨタ rows** (`顧客 == "トヨタ"`), sorts by `終了時刻` desc, and
 emits exactly **5 columns** `出荷日,品番,収容数(数量),工場コード,ヨコオ品番` (SJIS, no `#`). The `品番` column is
-shown **dashed** (`DashPartNo`, `0860900150`→`08609-00150`) — the same dashed form used for the ヨコオ品番 lookup. The `工場コード` value is
+shown **dashed** (`DashPartNo`, `0860900150`→`08609-00150`). The `工場コード` value is
 remapped by `MapFactoryCode` — its **5th–6th chars** (0-based index 4–5): `…T3…`→`A6`, `…L3…`→`A9`, else
-`""` (e.g. `1000T322`→`A6`, `1000L324`→`A9`). The **`ヨコオ品番` column is looked up from the `item_master`
-table** (2026-07-14), **NOT** copied from the upload's own `ヨコオ品番` cell (which actually held the
-出荷伝票No): `MonitorService.DashPartNo` dashes the `品番` (`0860900150`→`08609-00150`, dash after the 5th
-char; unchanged if already dashed or <6 chars), then `ResolveYokoo` does the in-memory equivalent of
-`SELECT name FROM item_master WHERE name LIKE '%08609-00150%' ORDER BY name DESC LIMIT 1` — the matched
-`品目名称` **is** the `ヨコオ品番`; **no match ⇒ blank**. The item-master names are loaded **once** per export
-and matched in memory (no per-row DB round-trip). A
+`""` (e.g. `1000T322`→`A6`, `1000L324`→`A9`). The **`ヨコオ品番` column is now taken DIRECTLY from the
+upload's own `ヨコオ品番` cell** (`DirectEntry.YokooPartNo`) — the Android app fills it correctly, so the old
+`item_master` 品目名称 lookup (`ResolveYokoo`) was **removed 2026-07-16** (MonitorService no longer depends on
+`IItemMasterStore`). A
 **Refresh** button (`btn_refresh`, immediately left of the supply button) force-reloads the day-log now (resets
 `_dayLogSig` then calls `RefreshAsync`) instead of waiting for the 2s timer; it is **hidden by default**
 and shown only when `showRefreshButton` is `true` (the grid already auto-reloads every 2 s, so it's
@@ -274,14 +285,18 @@ numeric surrogate PK (`id BIGINT AUTO_INCREMENT`); FKs reference `id`:
 - `monitor_entries`, `pallet_ops`, `pallet_op_items`, `direct_entries` — normalized rows of typed
   CSVs (FK→csv_uploads / pallet_ops, cascade). Relation: **csv_upload 1—* entries/ops 1—* items**.
   Time-of-day cells (`開始時刻`/`終了時刻`) are `TIME` (`TimeOnly?`); `出荷日` is `DATE` (`DateOnly?`).
+  `direct_entries.status_code` (`varchar(8)`, 0/9) was **added 2026-07-16** — since `EnsureCreated` never
+  alters an existing table, `CsvStore.EnsureSchemaAsync` adds it via a guarded `ALTER TABLE … ADD COLUMN`
+  (information_schema check) at startup; a fresh DB already has it from the model.
   (Display/export read `RawCsv`, not these — they're the queryable normalized copy.)
 - `item_master` (品目マスタ) — DB copy of `item_master.csv` (`code`/`name`/`box_type`/`sub_name` =
   `品目コード,品目名称,箱種,品目名称_2`). **Standalone** (no FK; NOT cleared by Reset). Owned by
   `Services/ItemMasterStore.cs`, run at startup: `EnsureSchemaAsync` (`CREATE TABLE IF NOT EXISTS` —
   needed because `EnsureCreated` only builds tables on a **fresh** DB, never adds one to an existing DB,
   so no drop is required) then `UpsertFromCsvAsync` (**UPSERT by `code`**: INSERT new / UPDATE existing,
-  **never DELETE**; a blank CSV cell keeps the stored value — runs every startup, idempotent). Used by
-  the supply export to resolve `品番`→`ヨコオ品番`.
+  **never DELETE**; a blank CSV cell keeps the stored value — runs every startup, idempotent). (Was used by
+  the supply export to resolve `品番`→`ヨコオ品番`; **that lookup was removed 2026-07-16** — the export now takes
+  `ヨコオ品番` straight from the upload. The table is still imported/kept for the Android app + future use.)
 
 ## Ingestion channels
 
