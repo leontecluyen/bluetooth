@@ -25,6 +25,7 @@ namespace LeontecSyncLogSystem.Data
         public DbSet<PalletOp> PalletOps => Set<PalletOp>();
         public DbSet<PalletOpItem> PalletOpItems => Set<PalletOpItem>();
         public DbSet<DirectEntry> DirectEntries => Set<DirectEntry>();
+        public DbSet<ItemMaster> ItemMasters => Set<ItemMaster>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -118,6 +119,22 @@ namespace LeontecSyncLogSystem.Data
                 entity.Property(e => e.FactoryCode).HasMaxLength(32);
                 entity.Property(e => e.YokooPartNo).HasMaxLength(64);
                 entity.HasOne<CsvUpload>().WithMany().HasForeignKey(e => e.UploadId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // 品目マスタ (item master), imported from item_master.csv. Named explicitly "item_master"
+            // (singular) to match the Android convention rather than the default pluralized table name.
+            // NOTE: EnsureCreated() only builds this on a FRESH database; on an already-created DB it is
+            // added by ItemMasterStore.EnsureSchemaAsync's "CREATE TABLE IF NOT EXISTS" — keep the two
+            // schemas in sync.
+            modelBuilder.Entity<ItemMaster>(entity =>
+            {
+                entity.ToTable("item_master");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Code).HasMaxLength(64);
+                entity.Property(e => e.Name).HasMaxLength(256);
+                entity.Property(e => e.BoxType).HasMaxLength(64);
+                entity.Property(e => e.SubName).HasMaxLength(256);
+                entity.HasIndex(e => e.Code);
             });
         }
     }

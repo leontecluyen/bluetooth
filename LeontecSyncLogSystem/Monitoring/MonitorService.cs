@@ -16,14 +16,17 @@ namespace LeontecSyncLogSystem.Monitoring
     {
         private readonly ServiceStatus _status;
         private readonly ICsvStore _csvStore;
+        private readonly IItemMasterStore _itemMasterStore;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<MonitorService> _logger;
 
         public MonitorService(
-            ServiceStatus status, ICsvStore csvStore, IServiceScopeFactory scopeFactory, ILogger<MonitorService> logger)
+            ServiceStatus status, ICsvStore csvStore, IItemMasterStore itemMasterStore,
+            IServiceScopeFactory scopeFactory, ILogger<MonitorService> logger)
         {
             _status = status;
             _csvStore = csvStore;
+            _itemMasterStore = itemMasterStore;
             _scopeFactory = scopeFactory;
             _logger = logger;
         }
@@ -330,57 +333,95 @@ namespace LeontecSyncLogSystem.Monitoring
             => TimeSpan.TryParse((cell ?? "").Trim(), out var t) ? t : TimeSpan.MinValue;
 
         /// <summary>
-        /// Build the 直送 (direct) "supply" export (補給データ出力) for one <paramref name="date"/>: aggregate
-        /// all direct uploads of the day, keep only <b>トヨタ</b> rows (顧客 == "トヨタ"), and project onto the
-        /// fixed 5-column supply layout <c>出荷日, 品番, 収容数(数量), 工場コード, ヨコオ品番</c>. The 工場コード value
-        /// is remapped by <see cref="MapFactoryCode"/> (its 5th–6th chars: "…T3…" → "A6", "…L3…" → "A9",
-        /// anything else → ""). Reads the RAW uploaded CSV (11-col wire layout) so it can still see
-        /// 収容数 / ヨコオ品番 — columns the normal 10-col day-log display drops. Independent of the day-log
-        /// display filter (direct shows all rows anyway).
+        /// Build the 直送 (direct) "supply" export (補給データ出力) for one <paramref name="date"/>: read the
+        /// day's rows from the <b>normalized <c>direct_entries</c> table</b> (via
+        /// <see cref="ICsvStore.GetDirectEntriesForDayAsync"/> — the SAME source as the day-log grid, so
+        /// deleting rows there shrinks this export too and it can never show more than the grid), keep
+        /// only <b>トヨタ</b> rows (顧客 == "トヨタ"), sort by 終了時刻 DESC, and project onto the fixed
+        /// 5-column supply layout <c>出荷日, 品番, 収容数(数量), 工場コード, ヨコオ品番</c>. The 工場コード value is
+        /// remapped by <see cref="MapFactoryCode"/> (its 5th–6th chars: "…T3…" → "A6", "…L3…" → "A9",
+        /// anything else → ""). The <b>品番</b> column is shown <b>dashed</b> (<see cref="DashPartNo"/>,
+        /// e.g. <c>0860900150</c> → <c>08609-00150</c>) — the same dashed form used for the ヨコオ品番 lookup.
+        ///
+        /// <para>The <b>ヨコオ品番</b> column is <b>looked up from the item master</b> (NOT the upload's own
+        /// ヨコオ品番 cell, which actually held the 出荷伝票No): the 品番 is dashed (<c>0860900150</c> →
+        /// <c>08609-00150</c>, see <see cref="DashPartNo"/>) and matched against the item master's 品目名称
+        /// with a <c>LIKE '%…%'</c> search; among the matches the one that sorts LAST (ORDER BY name DESC)
+        /// wins and its 品目名称 IS the ヨコオ品番 (see <see cref="ResolveYokoo"/>). No match ⇒ blank.</para>
         /// </summary>
         public async Task<CsvTableDto> GetDirectSupplyExportAsync(DateOnly date, CancellationToken token = default)
         {
-            var raws = await _csvStore.GetRawCsvsForDayAsync("direct_log", date, token);
+            // Read the normalized direct_entries rows for the day — exactly what the grid shows (date
+            // filtered + respects deletions), NOT the raw CSV (which re-parses deleted/superseded rows).
+            var entries = await _csvStore.GetDirectEntriesForDayAsync(date, token);
 
-            // Pull the source columns we need BY HEADER NAME — 顧客 (Toyota filter), 終了時刻 (sort key)
-            // plus 収容数 / ヨコオ品番 which the 10-col display layout omits. AppendCsvProjected tolerates
-            // column reordering.
-            var srcCols = new[] { "顧客", "出荷日", "品番", "収容数", "工場コード", "ヨコオ品番", "終了時刻" };
-            var src = new CsvTableDto { Headers = srcCols.ToList() };
-            foreach (var raw in raws)
-            {
-                if (string.IsNullOrWhiteSpace(raw)) continue;
-                AppendCsvProjected(src, raw, srcCols);
-            }
+            // The ヨコオ品番 lookup matches 品番 against the item master's 品目名称. Load every name ONCE here
+            // (masters are small) and match in memory, rather than one DB round-trip per exported row.
+            var itemNames = await _itemMasterStore.GetAllNamesAsync(token);
 
             var dto = new CsvTableDto
             {
                 Headers = new List<string> { "出荷日", "品番", "収容数(数量)", "工場コード", "ヨコオ品番" },
             };
-            const int cust = 0, ship = 1, part = 2, cap = 3, fac = 4, yoko = 5, end = 6;
-            static string At(string[] r, int i) => (i >= 0 && i < r.Length) ? r[i].Trim() : "";
 
-            // Toyota only, sorted by 終了時刻 (completion time) DESCENDING — same ordering as the day-log.
-            var toyotaRows = src.Rows
-                .Where(r => At(r, cust) == "トヨタ")
-                .OrderByDescending(r => EndTimeKey(At(r, end)))
+            // Toyota only, sorted by 終了時刻 (completion time) DESCENDING — same ordering as the day-log
+            // (rows with no 終了時刻 sort last).
+            var toyotaRows = entries
+                .Where(e => e.Customer == "トヨタ")
+                .OrderByDescending(e => e.EndTime.HasValue)
+                .ThenByDescending(e => e.EndTime)
                 .ToList();
-            foreach (var r in toyotaRows)
+            int matched = 0;
+            foreach (var e in toyotaRows)
             {
+                var dashedPart = DashPartNo(e.PartNo);           // 0860900150 → 08609-00150 (shown dashed)
+                var yokoo = ResolveYokoo(e.PartNo, itemNames);   // "" when nothing matches
+                if (yokoo.Length > 0) matched++;
                 dto.Rows.Add(new[]
                 {
-                    At(r, ship),                       // 出荷日
-                    At(r, part),                       // 品番
-                    At(r, cap),                        // 収容数(数量)
-                    MapFactoryCode(At(r, fac)),        // 工場コード → A6 / A9 / ""
-                    At(r, yoko),                       // ヨコオ品番
+                    e.ShipDate?.ToString("yyyy/MM/dd") ?? "",  // 出荷日
+                    dashedPart,                                // 品番 (dashed, e.g. 08609-00150)
+                    e.Capacity.ToString(),                     // 収容数(数量)
+                    MapFactoryCode(e.FactoryCode),             // 工場コード → A6 / A9 / ""
+                    yokoo,                                     // ヨコオ品番 (from item master, "" if not found)
                 });
             }
 
             _logger.LogInformation(
-                "Supply export built: date={Date:yyyy-MM-dd} → {Toyota}/{Total} トヨタ rows from {Uploads} direct uploads (sorted by 終了時刻 desc).",
-                date.ToDateTime(TimeOnly.MinValue), toyotaRows.Count, src.Rows.Count, raws.Count);
+                "Supply export built: date={Date:yyyy-MM-dd} → {Toyota}/{Total} トヨタ rows from direct_entries " +
+                "(sorted by 終了時刻 desc); ヨコオ品番 resolved for {Matched}/{Toyota} rows against {Names} item-master names.",
+                date.ToDateTime(TimeOnly.MinValue), toyotaRows.Count, entries.Count, matched, toyotaRows.Count, itemNames.Count);
             return dto;
+        }
+
+        /// <summary>
+        /// Insert a dash into a トヨタ 品番 so it lines up with the dashed part numbers stored in the item
+        /// master's 品目名称: e.g. <c>"0860900150"</c> → <c>"08609-00150"</c> (dash after the 5th char).
+        /// If the value already contains a dash or is shorter than 6 chars, it is returned unchanged.
+        /// </summary>
+        private static string DashPartNo(string partNo)
+        {
+            if (string.IsNullOrEmpty(partNo) || partNo.Contains("-") || partNo.Length < 6) return partNo;
+            return partNo.Substring(0, 5) + "-" + partNo.Substring(5);
+        }
+
+        /// <summary>
+        /// Resolve a 品番 to its ヨコオ品番 via the item master (in-memory equivalent of
+        /// <c>SELECT name FROM item_master WHERE name LIKE '%{dashed}%' ORDER BY name DESC LIMIT 1</c>):
+        /// dash the 品番 (<see cref="DashPartNo"/>), then among every 品目名称 that CONTAINS that dashed
+        /// code take the one that sorts LAST (ordinal). Returns "" when the 品番 is blank or nothing matches.
+        /// </summary>
+        private static string ResolveYokoo(string partNo, IReadOnlyList<string> names)
+        {
+            var dashed = DashPartNo(partNo);
+            if (dashed.Length == 0) return "";
+            string? best = null;
+            foreach (var n in names)
+            {
+                if (string.IsNullOrEmpty(n) || n.IndexOf(dashed, StringComparison.Ordinal) < 0) continue;
+                if (best == null || string.CompareOrdinal(n, best) > 0) best = n; // keep the ORDER BY DESC max
+            }
+            return best ?? "";
         }
 
         /// <summary>
@@ -392,7 +433,7 @@ namespace LeontecSyncLogSystem.Monitoring
         {
             if (string.IsNullOrEmpty(code) || code.Length < 6) return "";
             var seg = code.Substring(4, 2);
-            return seg == "T3" ? "A6" : seg == "L3" ? "A9" : "";
+            return seg == "T3" ? "A6" : seg == "L3" ? "A9" : seg == "02" ? "C5" : "";
         }
 
         /// <summary>

@@ -30,7 +30,8 @@ LeontecSyncLogSystem/
   appsettings.json      Sync (BluetoothServiceName + BackupFolder), HTTP port (legacy "Kestrel" key),
                         Logging (DB settings are NOT here — external MySQL, see mysql.xml below)
   Data/AppDbContext.cs  EF Core 3.1 context (net48); typed tables (csv_uploads + normalized rows +
-                        devices) + DateOnly/TimeOnly value converters; schema via EnsureCreated()
+                        devices + item_master) + DateOnly/TimeOnly value converters; schema via
+                        EnsureCreated() (item_master also via ItemMasterStore.EnsureSchemaAsync)
   Services/
     AppPaths.cs           resolves the on-disk layout (app dir + <root>/_master,_backup,mysql.xml)
     SyncOptions.cs        SyncOptions (BluetoothServiceName + BackupFolder); no DB options anymore
@@ -39,6 +40,10 @@ LeontecSyncLogSystem/
     MasterStore.cs        PC-owned source of truth for the 2 master CSVs (customer/item): load/save
                           (UTF-8 no BOM) + first-run seed from the exe-side master-seed/ bundle
                           (linked from the Android assets — see below) + SHA-256 Version()
+    ItemMasterStore.cs    DB copy of 品目マスタ (item_master table): EnsureSchemaAsync (CREATE TABLE IF
+                          NOT EXISTS, since EnsureCreated won't add a table to an existing DB) +
+                          UpsertFromCsvAsync (upsert by code, never delete) at startup; supplies the
+                          品目名称 names the supply export matches to resolve 品番→ヨコオ品番
     FrameDecoder.cs       STX/ETX byte framing (pure, testable)
     BluetoothSppServer.cs  32feet.NET RFCOMM SPP server, multi-client accept loop
     HttpApiService.cs     IHostedService HTTP monitoring API via System.Net.HttpListener (net48; no Kestrel)
@@ -110,9 +115,10 @@ back to the received-local date). **All 3 day-logs read their NORMALIZED DB tabl
 falls back to `BuildUnknownDtoFromRawAsync` (RawCsv). The `ICsvStore.Get{Monitor,PalletOps,Direct}…
 ForDayAsync` methods join the typed table → `csv_uploads` for the same `LogDate` filter and order by
 `ReceivedAtUtc` then `Id` (= creation order, so the display filter's 削除/latest-state rules still hold).
-So rows deleted directly from those tables drop out of the grid **and** Export. `補給データ出力` is
-unaffected — it still re-reads `RawCsv` for `収容数`/`ヨコオ品番`, so it is NOT shrunk by trimming
-`direct_entries`. **Columns are PINNED to the type's canonical DISPLAY header**
+So rows deleted directly from those tables drop out of the grid **and** Export. `補給データ出力` **also reads
+`direct_entries`** now (2026-07-14) — via the same `GetDirectEntriesForDayAsync`, so it is date-filtered,
+respects deletions, and can never show more rows than the grid (`収容数` comes from `DirectEntry.Capacity`;
+it no longer re-parses `RawCsv`). **Columns are PINNED to the type's canonical DISPLAY header**
 (`MonitorService.CanonicalHeaders`: monitor 8-col, pallet 7-col, **direct 10-col**), **NOT derived
 from the uploaded CSV** nor from "whichever upload arrived first". The display header may
 **intentionally differ from the phone's wire layout**: direct is **uploaded 11-col** (old order, with
@@ -226,11 +232,20 @@ file — it serializes the exact `DataTable` the grid is bound to (minus the dis
 so grid and file never drift. A **補給データ出力** (supply-export) button (`btn_supply_export`,
 `_btnSupplyExport`, immediately left of Export) is **shown ONLY on the direct radio** (its `Visible`
 tracks `_rbDirect.Checked` — no `configuration.xml` toggle). It is a **different** export from the grid:
-`MonitorService.GetDirectSupplyExportAsync(date)` re-reads the day's **raw** direct uploads (so it still
-sees `収容数`/`ヨコオ品番`, which the 10-col display drops), keeps **only トヨタ rows** (`顧客 == "トヨタ"`), and
-emits exactly **5 columns** `出荷日,品番,収容数(数量),工場コード,ヨコオ品番` (SJIS, no `#`). The `工場コード` value is
+`MonitorService.GetDirectSupplyExportAsync(date)` reads the day's rows from the **normalized
+`direct_entries` table** (`GetDirectEntriesForDayAsync` — the same source as the day-log grid, so it is
+date-filtered and respects deletions, never showing more than the grid; `収容数` = `DirectEntry.Capacity`),
+keeps **only トヨタ rows** (`顧客 == "トヨタ"`), sorts by `終了時刻` desc, and
+emits exactly **5 columns** `出荷日,品番,収容数(数量),工場コード,ヨコオ品番` (SJIS, no `#`). The `品番` column is
+shown **dashed** (`DashPartNo`, `0860900150`→`08609-00150`) — the same dashed form used for the ヨコオ品番 lookup. The `工場コード` value is
 remapped by `MapFactoryCode` — its **5th–6th chars** (0-based index 4–5): `…T3…`→`A6`, `…L3…`→`A9`, else
-`""` (e.g. `1000T322`→`A6`, `1000L324`→`A9`). A
+`""` (e.g. `1000T322`→`A6`, `1000L324`→`A9`). The **`ヨコオ品番` column is looked up from the `item_master`
+table** (2026-07-14), **NOT** copied from the upload's own `ヨコオ品番` cell (which actually held the
+出荷伝票No): `MonitorService.DashPartNo` dashes the `品番` (`0860900150`→`08609-00150`, dash after the 5th
+char; unchanged if already dashed or <6 chars), then `ResolveYokoo` does the in-memory equivalent of
+`SELECT name FROM item_master WHERE name LIKE '%08609-00150%' ORDER BY name DESC LIMIT 1` — the matched
+`品目名称` **is** the `ヨコオ品番`; **no match ⇒ blank**. The item-master names are loaded **once** per export
+and matched in memory (no per-row DB round-trip). A
 **Refresh** button (`btn_refresh`, immediately left of the supply button) force-reloads the day-log now (resets
 `_dayLogSig` then calls `RefreshAsync`) instead of waiting for the 2s timer; it is **hidden by default**
 and shown only when `showRefreshButton` is `true` (the grid already auto-reloads every 2 s, so it's
@@ -260,6 +275,13 @@ numeric surrogate PK (`id BIGINT AUTO_INCREMENT`); FKs reference `id`:
   CSVs (FK→csv_uploads / pallet_ops, cascade). Relation: **csv_upload 1—* entries/ops 1—* items**.
   Time-of-day cells (`開始時刻`/`終了時刻`) are `TIME` (`TimeOnly?`); `出荷日` is `DATE` (`DateOnly?`).
   (Display/export read `RawCsv`, not these — they're the queryable normalized copy.)
+- `item_master` (品目マスタ) — DB copy of `item_master.csv` (`code`/`name`/`box_type`/`sub_name` =
+  `品目コード,品目名称,箱種,品目名称_2`). **Standalone** (no FK; NOT cleared by Reset). Owned by
+  `Services/ItemMasterStore.cs`, run at startup: `EnsureSchemaAsync` (`CREATE TABLE IF NOT EXISTS` —
+  needed because `EnsureCreated` only builds tables on a **fresh** DB, never adds one to an existing DB,
+  so no drop is required) then `UpsertFromCsvAsync` (**UPSERT by `code`**: INSERT new / UPDATE existing,
+  **never DELETE**; a blank CSV cell keeps the stored value — runs every startup, idempotent). Used by
+  the supply export to resolve `品番`→`ヨコオ品番`.
 
 ## Ingestion channels
 

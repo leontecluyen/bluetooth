@@ -256,6 +256,17 @@ Bảng chuẩn hóa (`monitor_entries`/`pallet_ops`(+`pallet_op_items`)/`direct_
 **Quan hệ:** `devices` 1—* `csv_uploads` (theo `device_id`); mỗi `csv_uploads` 1—* rows
 (parse `raw_csv`) và 1—* bản chuẩn hóa (cascade khi xoá upload).
 
+**Bảng `item_master` (品目マスタ) — 2026-07-14.** Bản sao DB của `item_master.csv` (cột `code`/`name`/
+`box_type`/`sub_name` = `品目コード,品目名称,箱種,品目名称_2`), độc lập với `csv_uploads` (không FK, không bị
+`Reset` xoá). Dùng để tra `ヨコオ品番` cho 補給データ出力. **Quản lý bởi `Services/ItemMasterStore.cs`**, chạy
+lúc mở tool:
+- `EnsureSchemaAsync` — `CREATE TABLE IF NOT EXISTS item_master (...)`. **Bắt buộc** vì `EnsureCreated()`
+  chỉ tạo bảng trên DB **mới toanh**, KHÔNG thêm bảng vào DB đã có dữ liệu (nên không cần drop DB).
+- `UpsertFromCsvAsync` — **UPSERT theo `code`** (INSERT mã mới / UPDATE mã cũ, **không bao giờ DELETE**;
+  ô CSV rỗng thì giữ giá trị cũ). Chạy **mỗi lần khởi động** → idempotent, an toàn khi sau này cập nhật
+  tính năng (không mất data). Import từ `IMasterStore.Load(Item)` (= `<root>/_master/item_master.csv`,
+  seed từ Android assets).
+
 DB = **MySQL ngoài** (cài/chạy riêng; kết nối theo `mysql.xml`). Schema tạo lúc khởi động bằng
 **`db.Database.EnsureCreated()`** (EF Core 3.1 trên net48; không dùng migrations). Data do server
 MySQL bên ngoài quản lý.
@@ -366,11 +377,21 @@ MySQL bên ngoài quản lý.
   - **Nút "補給データ出力" (xuất dữ liệu bổ sung)** (`_btnSupplyExport`, ngay **bên trái** nút Xuất CSV) —
     **chỉ hiện khi chọn radio direct** (`Visible = _rbDirect.Checked`, cập nhật trong `OnDayFilterChanged`
     + `ApplyUiConfig`; **không** có công tắc `configuration.xml`). Đây là **một kiểu xuất KHÁC**, không
-    serialize lưới: `MonitorService.GetDirectSupplyExportAsync(date)` đọc lại **CSV thô** của direct
-    trong ngày (nên vẫn thấy `収容数`/`ヨコオ品番` mà layout hiển thị 10 cột đã bỏ), **chỉ giữ dòng トヨタ**
-    (`顧客 == "トヨタ"`), xuất đúng **5 cột** `出荷日,品番,収容数(数量),工場コード,ヨコオ品番` (SJIS, không cột `#`).
+    serialize lưới nhưng **đọc CÙNG NGUỒN với lưới**: `MonitorService.GetDirectSupplyExportAsync(date)`
+    đọc bảng chuẩn hóa `direct_entries` (`GetDirectEntriesForDayAsync` — **đã lọc ngày + tôn trọng xóa**,
+    KHÔNG còn parse `RawCsv` như trước nên **không dư dòng** so với lưới), **chỉ giữ dòng トヨタ**
+    (`顧客 == "トヨタ"`), sắp theo `終了時刻` desc, xuất đúng **5 cột** `出荷日,品番,収容数(数量),工場コード,ヨコオ品番`
+    (SJIS, không cột `#`; `収容数` lấy từ `DirectEntry.Capacity`). Cột `品番` **xuất dạng có dấu**
+    (`DashPartNo`, `0860900150`→`08609-00150`) — cùng dạng dùng để tra `ヨコオ品番`.
     Cột `工場コード` được **ánh xạ lại** bằng `MapFactoryCode` — theo **ký tự thứ 5–6** (index 0-based 4–5):
     `…T3…`→`A6`, `…L3…`→`A9`, còn lại `""` (vd `1000T322`→`A6`, `1000L324`→`A9`).
+  - **Cột `ヨコオ品番` giờ TRA từ bảng `item_master` (2026-07-14)**, KHÔNG còn lấy nguyên xi ô `ヨコオ品番`
+    của upload (ô đó thực chất chứa 出荷伝票No, xem [`docs/03`](03-ung-dung-android.md) + [`docs/04`](04-giao-thuc-du-lieu.md)).
+    Quy trình (`MonitorService.ResolveYokoo` + `DashPartNo`): lấy `品番` → **chèn dấu `-` sau ký tự thứ 5**
+    (`0860900150` → `08609-00150`; đã có `-` hoặc ngắn hơn 6 ký tự thì giữ nguyên) → tìm trong `item_master`
+    dòng có `品目名称 LIKE '%08609-00150%'`, `ORDER BY 品目名称 DESC LIMIT 1` (khớp nhiều thì lấy dòng sắp
+    **cuối** theo thứ tự tăng dần = lớn nhất ordinal); `品目名称` khớp đó **chính là** `ヨコオ品番`. **Không khớp ⇒ để trống.**
+    Danh sách tên item_master được nạp **1 lần** đầu hàm rồi so khớp trong bộ nhớ (không round-trip DB từng dòng).
   - **Nút "Refresh" (更新)** nằm **ngay bên trái nút 補給データ出力** (`_btnRefreshDay`, neo phải). Làm mới
     bảng log **ngay lập tức** theo yêu cầu (reset `_dayLogSig = ""` rồi gọi `RefreshAsync`) thay vì đợi
     timer 2s. **Mặc định ẩn**, chỉ hiện khi `showRefreshButton = true` — vì lưới đã tự làm mới mỗi 2s

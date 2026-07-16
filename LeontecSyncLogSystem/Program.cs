@@ -79,6 +79,11 @@ namespace LeontecSyncLogSystem
                     services.AddSingleton<IMasterStore>(sp =>
                         new MasterStore(masterRoot, masterSeedRoot, sp.GetRequiredService<ILogger<MasterStore>>()));
 
+                    // DB copy of the 品目マスタ (item_master table): created if missing + auto-imported
+                    // from the item master CSV when empty (both driven at startup below). Used by the
+                    // 直送 supply export to resolve a 品番 → ヨコオ品番.
+                    services.AddSingleton<IItemMasterStore, ItemMasterStore>();
+
                     // The Bluetooth SPP server is a singleton so BOTH the Worker (accept loop) and the
                     // dashboard (master push) share one instance + its live-connection registry.
                     services.AddSingleton<BluetoothSppServer>(sp => new BluetoothSppServer(
@@ -114,6 +119,14 @@ namespace LeontecSyncLogSystem
                     // creates the database + schema from the model (incl. the DateOnly/TimeOnly value
                     // converters) if they don't already exist.
                     db.Database.EnsureCreated();
+
+                    // item_master lives outside EnsureCreated's reach on an already-created DB, so make
+                    // sure the table exists, then UPSERT it from the CSV (INSERT new / UPDATE existing,
+                    // never delete — safe to re-run every startup). Both are best-effort (never throw)
+                    // so a DB hiccup can't block startup.
+                    var itemMaster = scope.ServiceProvider.GetRequiredService<IItemMasterStore>();
+                    itemMaster.EnsureSchemaAsync().GetAwaiter().GetResult();
+                    itemMaster.UpsertFromCsvAsync().GetAwaiter().GetResult();
 
                     var status = scope.ServiceProvider.GetRequiredService<ServiceStatus>();
                     var deviceStore = scope.ServiceProvider.GetRequiredService<IDeviceStore>();
